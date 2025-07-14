@@ -1,4 +1,4 @@
-Const WebSocket = require('ws');
+const WebSocket = require('ws');
 const express = require('express');
 const cors = require('cors');
 const { predictNext } = require('./matchrandom.js'); // Import thuật toán từ file riêng
