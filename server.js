@@ -273,7 +273,7 @@ function connectWebSocket() {
           const [du_doan, confidence, percentTai, percentXiu] = predictNext(fullHistory);
 
           currentData = {
-            id: "binhtool90",
+            id: "nhutquangdz",
             id_phien: id_phien_chua_co_kq,
             ket_qua: text,
             pattern: patternHistory.join(''),
