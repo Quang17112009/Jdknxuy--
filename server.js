@@ -1,7 +1,7 @@
 const WebSocket = require('ws');
 const express = require('express');
 const cors = require('cors');
-const crypto = require('crypto'); // Thêm dòng này để import crypto
+const crypto = require('crypto'); // Cần thư viện 'crypto' cho một số thuật toán
 
 const app = express();
 app.use(cors());
@@ -14,13 +14,13 @@ let currentData = {
   ket_qua: "",
   pattern: "",
   du_doan: "?",
-  do_tin_cay: 0,
-  phan_tram_tai: 0,
-  phan_tram_xiu: 0
+  confidence: 0,
+  percentTai: 0,
+  percentXiu: 0
 };
 let id_phien_chua_co_kq = null;
-// Thay đổi patternHistory thành historyResults để lưu trữ đầy đủ dữ liệu
-let historyResults = []; // Lưu dãy T/X gần nhất cùng tổng và dice
+let patternHistory = []; // Lưu dãy T/X gần nhất
+let fullHistory = []; // Lưu đầy đủ lịch sử để phục vụ predictNext
 
 // === Danh sách tin nhắn gửi lên server WebSocket ===
 const messagesToSend = [
@@ -31,6 +31,14 @@ const messagesToSend = [
   [6, "MiniGame", "taixiuPlugin", { cmd: 1005 }],
   [6, "MiniGame", "lobbyPlugin", { cmd: 10001 }]
 ];
+
+/**
+ * =================================================================
+ * BỘ THUẬT TOÁN DỰ ĐOÁN MỚI (CHUYỂN THỂ TỪ PYTHON)
+ * Tác giả: VanwNhat & Rinkivana
+ * Phiên bản: V2.1 - Loại bỏ trạng thái "Chờ"
+ * =================================================================
+ */
 
 // Helper function: Xác định Tài hay Xỉu từ tổng điểm
 function getTaiXiu(total) {
@@ -111,7 +119,7 @@ function du_doan_v7(dice_list) {
 function du_doan_v8(ds_tong) {
   let do_tin_cay = 0;
   const now = new Date();
-  if (now.getHours() >= 0 && now.getHours() < 5) {
+  if (now.getHours() >= 0 && now.getHours() < 5) { // Dựa vào thời gian hiện tại của server
       return ["Chờ", 0, "Không áp dụng công thức vào 0h-5h sáng"];
   }
   if (ds_tong.length < 3) return ["Chờ", 0, "Không đủ dữ liệu"];
@@ -123,37 +131,42 @@ function du_doan_v8(ds_tong) {
 
 /**
  * Hàm dự đoán chính, tổng hợp từ nhiều thuật toán con.
- * @param {Array} history - Mảng lịch sử kết quả, mỗi phần tử là { result, total, sid, dice }
- * @returns {Array} - [dự đoán cuối cùng, độ tin cậy, % tài, % xỉu]
+ * @param {Array} history - Mảng lịch sử kết quả, mỗi phần tử là { result: 'T'/'X', total: number, sid: string, dice: [d1, d2, d3] }
+ * Lưu ý: Mảng lịch sử phải được sắp xếp từ CŨ NHẤT đến MỚI NHẤT.
+ * Hàm sẽ tự động đảo ngược để các thuật toán con xử lý dữ liệu mới nhất ở cuối.
+ * @returns {Array} - [dự đoán cuối cùng (string: "Tài" hoặc "Xỉu"), độ tin cậy (number), % tài (number), % xỉu (number)]
  */
 function predictNext(history) {
+  // Tạo bản sao và đảo ngược lịch sử để các thuật toán con xử lý dữ liệu mới nhất ở cuối
+  const reversed_history = [...history].reverse();
+
   // 1. Tính toán thống kê cơ bản
-  const counts = history.reduce((acc, val) => {
-    acc[val.result] = (acc[val.result] || 0) + 1;
+  const counts = reversed_history.reduce((acc, val) => {
+    // Chuyển 'T'/'X' sang 'Tài'/'Xỉu' để tính toán thống kê
+    const result_text = val.result === 'T' ? 'Tài' : 'Xỉu';
+    acc[result_text] = (acc[result_text] || 0) + 1;
     return acc;
   }, { "Tài": 0, "Xỉu": 0 });
-  const totalGames = history.length || 1;
+  const totalGames = reversed_history.length || 1;
   const percentTai = (counts["Tài"] / totalGames) * 100;
   const percentXiu = (counts["Xỉu"] / totalGames) * 100;
 
   // 2. Luôn đưa ra dự đoán ngay cả khi lịch sử ngắn
-  if (history.length < 5) {
-    if (history.length === 0) {
+  if (reversed_history.length < 5) {
+    if (reversed_history.length === 0) {
       return ["Tài", 40, 0, 0];
     }
-    // Chuyển đổi 'T'/'X' sang 'Tài'/'Xỉu' để phù hợp với hàm getTaiXiu
-    const lastResultText = history[0].result === 'T' ? 'Tài' : 'Xỉu';
+    const lastResultText = reversed_history[0].result === 'T' ? 'Tài' : 'Xỉu';
     const prediction = lastResultText === "Tài" ? "Xỉu" : "Tài";
-    const confidence = 40 + history.length * 5; 
+    const confidence = 40 + reversed_history.length * 5; 
     return [prediction, confidence, percentTai, percentXiu];
   }
 
   // 3. Chuẩn bị dữ liệu đầu vào cho các thuật toán
-  // Đảm bảo dữ liệu mới nhất ở cuối mảng cho các thuật toán con (dùng .reverse() khi lấy dữ liệu)
-  const totals_list = history.map(h => h.total);
-  const kq_list = history.map(h => h.result === 'T' ? 'Tài' : 'Xỉu'); // Chuyển đổi 'T'/'X' sang 'Tài'/'Xỉu'
-  const dice_list = history.map(h => h.dice).filter(Boolean);
-  const ma_phien = history.at(-1).sid; // Lấy sid của phiên gần nhất
+  const totals_list = reversed_history.map(h => h.total);
+  const kq_list = reversed_history.map(h => h.result === 'T' ? 'Tài' : 'Xỉu');
+  const dice_list = reversed_history.map(h => h.dice).filter(Boolean);
+  const ma_phien = reversed_history.at(-1).sid; // Lấy sid của phiên gần nhất
 
   // 4. Chạy tất cả các thuật toán
   const predictions = [];
@@ -198,11 +211,8 @@ let pingInterval = null;
 let reconnectTimeout = null;
 let isManuallyClosed = false;
 
-// Hàm duDoanTiepTheo cũ đã bị xoá
-// function duDoanTiepTheo(pattern) { ... } // Đã loại bỏ
-
 function connectWebSocket() {
-  ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu3rRu", {
+  ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu9mX_hZMZ_m5gMNhkw0", {
     headers: {
       "User-Agent": "Mozilla/5.0",
       "Origin": "https://play.sun.win"
@@ -243,40 +253,38 @@ function connectWebSocket() {
         if (cmd === 1003 && data[1].gBB) {
           const { d1, d2, d3 } = data[1];
           const total = d1 + d2 + d3;
-          const result_char = total > 10 ? "T" : "X"; // 'T' cho Tài, 'X' cho Xỉu
+          const result = total > 10 ? "T" : "X"; // Tài / Xỉu
 
-          // Cập nhật lịch sử kết quả đầy đủ
-          if (id_phien_chua_co_kq) { // Chỉ thêm vào lịch sử nếu có sid của phiên
-            historyResults.push({
-              sid: id_phien_chua_co_kq,
-              result: result_char, // 'T' hoặc 'X'
-              total: total,
-              dice: [d1, d2, d3]
-            });
-          }
-          
-          // Giới hạn lịch sử để tránh quá lớn
-          if (historyResults.length > 50) historyResults.shift();
+          // Lưu pattern và lịch sử đầy đủ
+          patternHistory.push(result);
+          if (patternHistory.length > 20) patternHistory.shift();
 
-          const text_kq = `${d1}-${d2}-${d3} = ${total} (${result_char === 'T' ? 'Tài' : 'Xỉu'})`;
+          fullHistory.push({
+            result: result,
+            total: total,
+            sid: id_phien_chua_co_kq,
+            dice: [d1, d2, d3]
+          });
+          if (fullHistory.length > 50) fullHistory.shift(); // Giới hạn lịch sử để tránh quá tải bộ nhớ
 
-          // Gọi thuật toán dự đoán chính
-          // historyResults cần được đảo ngược để các thuật toán con nhận dữ liệu mới nhất ở cuối
-          const [du_doan_final, do_tin_cay_final, phan_tram_tai_final, phan_tram_xiu_final] = predictNext([...historyResults].reverse());
+          const text = `${d1}-${d2}-${d3} = ${total} (${result === 'T' ? 'Tài' : 'Xỉu'})`;
+
+          // Dự đoán bằng thuật toán mới
+          const [du_doan, confidence, percentTai, percentXiu] = predictNext(fullHistory);
 
           currentData = {
             id: "binhtool90",
             id_phien: id_phien_chua_co_kq,
-            ket_qua: text_kq,
-            pattern: historyResults.map(h => h.result).join(''), // Dãy T/X đơn giản
-            du_doan: du_doan_final,
-            do_tin_cay: do_tin_cay_final,
-            phan_tram_tai: phan_tram_tai_final,
-            phan_tram_xiu: phan_tram_xiu_final
+            ket_qua: text,
+            pattern: patternHistory.join(''),
+            du_doan: du_doan,
+            confidence: confidence,
+            percentTai: parseFloat(percentTai.toFixed(2)),
+            percentXiu: parseFloat(percentXiu.toFixed(2))
           };
 
-          console.log(`Phiên ${id_phien_chua_co_kq}: ${text_kq} → Dự đoán tiếp: ${currentData.du_doan} (Độ tin cậy: ${currentData.do_tin_cay.toFixed(2)}%)`);
-          id_phien_chua_co_kq = null; // Reset sid sau khi đã xử lý kết quả
+          console.log(`Phiên ${id_phien_chua_co_kq}: ${text} → Dự đoán tiếp: ${currentData.du_doan} (${currentData.confidence.toFixed(2)}%)`);
+          id_phien_chua_co_kq = null;
         }
       }
     } catch (e) {
