@@ -118,7 +118,7 @@ function connectWebSocket() {
 
 app.get('/taixiu', (req, res) => res.json(currentData));
 app.get('/', (req, res) => {
-  res.send(`<h2>API Tài Xỉu - V2.1 by VanwNhat & Rinkivana</h2><p><a href="/taixiu">Xem JSON</a></p>`);
+  res.send(`<h2>API Tài Xỉu - V2.1 by nhutquangdz</h2><p><a href="/taixiu">Xem JSON</a></p>`);
 });
 
 app.listen(PORT, () => {
