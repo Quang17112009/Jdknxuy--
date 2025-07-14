@@ -1,4 +1,4 @@
-const WebSocket = require('ws');
+Const WebSocket = require('ws');
 const express = require('express');
 const cors = require('cors');
 const { predictNext } = require('./matchrandom.js'); // Import thuật toán từ file riêng
@@ -7,7 +7,7 @@ const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 5000;
 
-// Dữ liệu trả về cho client
+// === Biến lưu trạng thái ===
 let currentData = {
   "phien_truoc": null,
   "ket_qua": "Đang chờ...",
@@ -21,9 +21,19 @@ let currentData = {
   "ngay": "",
   "Id": "@nhutquangdz"
 };
-
 let history = []; // Lịch sử các phiên (tối đa 100)
 
+// === Danh sách tin nhắn gửi lên server WebSocket ===
+const messagesToSend = [
+  [1, "MiniGame", "SC_apisunwin123", "binhlamtool90", {
+    "info": "{\"ipAddress\":\"2a09:bac1:7aa0:10::2e5:4d\",\"userId\":\"d93d3d84-f069-4b3f-8dac-b4714d812143\",\"username\":\"SC_apisunwin123\",\"timestamp\":1752045925640,\"refreshToken\":\"dd38d05401bb48b4ac3c2f6dc37f36d9.f22dccad89bb4e039814b7de64b05d63\"}",
+    "signature": "6FAD7CF6196AFBF0380BC69B59B653A05153D3D0E4E9A07BA43890CC3FB665B92C2E09E5B34B31FD8D74BDCB3B03A29255C5A5C7DFB426A8D391836CF9DCB7E5CEA743FE07521075DED70EFEC7F78C8993BDBF8626D58D3E68D36832CA4823F516B7E41DB353EA79290367D34DF98381089E69EA7C67FB3588B39C9C4D7174B2"
+  }],
+  [6, "MiniGame", "taixiuPlugin", { cmd: 1005 }],
+  [6, "MiniGame", "lobbyPlugin", { cmd: 10001 }]
+];
+
+// === Hàm phân tích xuất hiện (pt_xh) ===
 function pt_xh(ls) {
     if (ls.length < 3) return "Chưa đủ dữ liệu";
     const dem_t = ls.filter(s => s.result === "Tài").length;
@@ -39,89 +49,112 @@ function pt_xh(ls) {
     return `${mo_ta_xh}, ${tt_chuoi}`;
 }
 
-const messagesToSend = [
-  [1, "MiniGame", "SC_thataoduocko112233", "112233", {
-    "info": "{\"ipAddress\":\"2402:800:62cd:ef90:a445:40de:a24a:765e\",\"userId\":\"1a46e9cd-135d-4f29-9cd5-0b61bd2fb2a9\",\"username\":\"SC_thataoduocko112233\",\"timestamp\":1752257356729,\"refreshToken\":\"fe70e712cf3c4737a4ae22cbb3700c8e.f413950acf984ed6b373906f83a4f796\"}",
-    "signature": "16916AC7F4F163CD00B319824B5B90FFE11BC5E7D232D58E7594C47E271A5CDE0492BB1C3F3FF20171B3A344BEFEAA5C4E9D28800CF18880FEA6AC3770016F2841FA847063B80AF8C8A747A689546CE75E99A7B559612BC30FBA5FED9288B69013C099FD6349ABC2646D5ECC2D5B2A1C5A9817FE5587844B41C752D0A0F6F304"
-  }],
-  [6, "MiniGame", "taixiuPlugin", { cmd: 1005 }],
-  [6, "MiniGame", "lobbyPlugin", { cmd: 10001 }]
-];
+// === WebSocket ===
+let ws = null;
+let pingInterval = null;
+let reconnectTimeout = null;
+let isManuallyClosed = false;
 
 function connectWebSocket() {
-  const ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu9mX_hZMZ_m5gMNhkw0", {
-    headers: {"User-Agent": "Mozilla/5.0", "Origin": "https://play.sun.win"}
+  ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu9mX_hZMZ_m5gMNhkw0", {
+    headers: {
+      "User-Agent": "Mozilla/5.0",
+      "Origin": "https://play.sun.win"
+    }
   });
 
   ws.on('open', () => {
-    console.log('[LOG] WebSocket đã kết nối thành công.');
+    console.log('[✅] WebSocket kết nối');
     messagesToSend.forEach((msg, i) => {
-      setTimeout(() => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg)); }, i * 600);
+      setTimeout(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify(msg));
+        }
+      }, i * 600);
     });
-    setInterval(() => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }, 15000);
+
+    pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
+      }
+    }, 15000);
+  });
+
+  ws.on('pong', () => {
+    console.log('[📶] Ping OK');
   });
 
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
-      if (!Array.isArray(data) || typeof data[1] !== 'object') return;
-      
-      const content = data[1];
-      const cmd = content.cmd;
+      if (Array.isArray(data) && typeof data[1] === 'object') {
+        const cmd = data[1].cmd;
+        const content = data[1];
 
-      if (cmd === 1008 && content.sid) {
-        currentData.phien_hien_tai = content.sid;
-        
-        // Gọi hàm dự đoán và nhận kết quả
-        const [prediction, confidence, percentTai, percentXiu] = predictNext(history);
+        if (cmd === 1008 && content.sid) {
+          currentData.phien_hien_tai = content.sid;
+          
+          // Gọi hàm dự đoán và nhận kết quả từ matchrandom.js
+          const [prediction, confidence, percentTai, percentXiu] = predictNext(history);
 
-        // Cập nhật dữ liệu
-        currentData.du_doan = prediction;
-        currentData.do_tin_cay = `${parseFloat(confidence).toFixed(2)}%`;
-        currentData.percent_tai = `${parseFloat(percentTai).toFixed(2)}%`;
-        currentData.percent_xiu = `${parseFloat(percentXiu).toFixed(2)}%`;
-        currentData.ngay = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
+          // Cập nhật dữ liệu
+          currentData.du_doan = prediction;
+          currentData.do_tin_cay = `${parseFloat(confidence).toFixed(2)}%`;
+          currentData.percent_tai = `${parseFloat(percentTai).toFixed(2)}%`;
+          currentData.percent_xiu = `${parseFloat(percentXiu).toFixed(2)}%`;
+          currentData.ngay = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
 
-        console.log(`\n[PHIÊN MỚI] Bắt đầu phiên ${content.sid}. Dự đoán: ${prediction} (${confidence.toFixed(2)}%)`);
-      }
+          console.log(`\n[PHIÊN MỚI] Bắt đầu phiên ${content.sid}. Dự đoán: ${prediction} (${confidence.toFixed(2)}%)`);
+        }
 
-      if (cmd === 1003 && content.gBB) {
-        const { d1, d2, d3, sid } = content;
-        if (!history.some(h => h.sid === sid)) {
-            const total = d1 + d2 + d3;
-            const result = total > 10 ? "Tài" : "Xỉu";
-            
-            // Lưu đầy đủ thông tin vào lịch sử
-            history.unshift({ result, total, sid, dice: [d1, d2, d3] });
-            if (history.length > 100) history.pop();
+        if (cmd === 1003 && content.gBB) {
+          const { d1, d2, d3, sid } = content;
+          if (!history.some(h => h.sid === sid)) { // Đảm bảo không thêm trùng lặp
+              const total = d1 + d2 + d3;
+              const result = total > 10 ? "Tài" : "Xỉu";
+              
+              // Lưu đầy đủ thông tin vào lịch sử
+              history.unshift({ result, total, sid, dice: [d1, d2, d3] });
+              if (history.length > 100) history.pop(); // Giới hạn lịch sử 100 phiên
 
-            currentData.phien_truoc = sid;
-            currentData.ket_qua = result;
-            currentData.Dice = [d1, d2, d3];
-            currentData.cau = pt_xh(history);
-            
-            console.log(`[KẾT QUẢ] Phiên ${sid}: ${result} (${total})`);
+              currentData.phien_truoc = sid;
+              currentData.ket_qua = result;
+              currentData.Dice = [d1, d2, d3];
+              currentData.cau = pt_xh(history);
+              
+              console.log(`[KẾT QUẢ] Phiên ${sid}: ${result} (${total})`);
+          }
         }
       }
-    } catch (err) {
-      console.error('[ERROR] Lỗi xử lý dữ liệu:', err.message);
+    } catch (e) {
+      console.error('[Lỗi]:', e.message);
     }
   });
 
   ws.on('close', () => {
-    console.warn('[WARN] WebSocket mất kết nối. Thử lại sau 3 giây...');
-    setTimeout(connectWebSocket, 3000);
+    console.log('[🔌] WebSocket ngắt. Đang kết nối lại...');
+    clearInterval(pingInterval);
+    if (!isManuallyClosed) {
+      reconnectTimeout = setTimeout(connectWebSocket, 2500);
+    }
   });
 
-  ws.on('error', (err) => console.error('[ERROR] Lỗi WebSocket:', err.message));
+  ws.on('error', (err) => {
+    console.error('[❌] WebSocket lỗi:', err.message);
+  });
 }
 
-app.get('/taixiu', (req, res) => res.json(currentData));
+// === API ===
+app.get('/taixiu', (req, res) => {
+  res.json(currentData);
+});
+
 app.get('/', (req, res) => {
   res.send(`<h2>API Tài Xỉu - V2.1 by nhutquangdz</h2><p><a href="/taixiu">Xem JSON</a></p>`);
 });
 
+// === Khởi động server ===
 app.listen(PORT, () => {
-  console.log(`[LOG] Server đang chạy tại http://localhost:${PORT}`);
+  console.log(`[🌐] Server chạy tại http://localhost:${PORT}`);
   connectWebSocket();
 });
