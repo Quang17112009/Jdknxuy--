@@ -1,0 +1,16 @@
+{
+  "name": "sunwin-api-v2.1",
+  "version": "2.1.0",
+  "description": "API Sunwin",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "author": "@nhutquangdz",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "ws": "^8.17.1"
+  }
+}
