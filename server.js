@@ -14,7 +14,7 @@ let currentData = {
   "do_tin_cay": "",
   "cau": "",
   "ngay": "",
-  "Id": "Nhutquangvip - @nhutquangdz 🪼"
+  "Id": "ApiSunWin-by @nhutquangdz🪼"
 };
 
 let id_phien_chua_co_kq = null;
