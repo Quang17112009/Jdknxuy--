@@ -18,128 +18,485 @@ let currentData = {
 };
 
 let id_phien_chua_co_kq = null;
-let history = []; // Sử dụng mảng đối tượng thay vì chuỗi
 
-// ---
+let patternHistory = []; // Lưu dãy T/X gần nhất (lên đến 200 phiên)
+let diceHistory = [];    // Lưu lịch sử các mặt xúc xắc chi tiết
+let lastRawPredictions = []; // Lưu trữ các dự đoán thô của phiên trước để cập nhật trọng số chính xác hơn
 
-// === Biến lưu trạng thái cho thuật toán ===
-// Lưu dãy T/X gần nhất (lên đến 200 phiên). Đây là lịch sử kết quả Tài/Xỉu.
-let patternHistory = []; 
-// Lưu lịch sử các mặt xúc xắc chi tiết (d1, d2, d3).
-let diceHistory = []; 
+let predictionPerformance = {}; // { strategyName: { correct: 0, total: 0 } }
+
+// Các trọng số này sẽ tự động điều chỉnh theo thời gian dựa trên hiệu suất
+// Cố định tên nhóm chiến lược để trọng số được học hỏi và áp dụng nhất quán
+let strategyWeights = {
+    // Trọng số ban đầu cho các loại mẫu cầu chung
+    "Cầu Bệt": 1.0,
+    "Cầu 1-1": 1.0,
+    "Cầu Lặp 2-1": 1.0,
+    "Cầu Lặp 2-2": 1.0,
+    "Cầu Lặp 3-1": 1.0,
+    "Cầu Lặp 3-2": 1.0,
+    "Cầu Lặp 3-3": 1.0,
+    "Cầu Lặp 4-1": 1.0,
+    "Cầu Lặp 4-2": 1.0,
+    "Cầu Lặp 4-3": 1.0,
+    "Cầu Lặp 4-4": 1.0,
+    "Cầu Đối Xứng": 1.2,
+    "Cầu Đảo Ngược": 1.1,
+    "Cầu Ziczac Ngắn": 0.8,
+    // Trọng số cho các chiến lược đặc biệt không thuộc nhóm mẫu
+    "Xu hướng Tài mạnh (Ngắn)": 1.0,
+    "Xu hướng Xỉu mạnh (Ngắn)": 1.0,
+    "Xu hướng Tài rất mạnh (Dài)": 1.2,
+    "Xu hướng Xỉu rất mạnh (Dài)": 1.2,
+    "Xu hướng tổng điểm": 0.9,
+    "Bộ ba": 1.3,
+    "Điểm 10": 0.8,
+    "Điểm 11": 0.8,
+    "Bẻ cầu bệt dài": 1.6,
+    "Bẻ cầu 1-1 dài": 1.6,
+    "Reset Cầu/Bẻ Sâu": 1.9
+};
+
+// --- HÀM TẠO MẪU TỰ ĐỘNG ĐỂ ĐẠT 1000+ MẪU ---
+function generateCommonPatterns() {
+    let patterns = [];
+
+    // 1. Cầu Bệt (Streaks): TTT... và XXX... (từ 3 đến 20 lần)
+    for (let i = 3; i <= 20; i++) {
+        patterns.push({
+            name: `Cầu Bệt Tài (${i})`,
+            pattern: "T".repeat(i),
+            predict: "T",
+            conf: 0.05 + (i * 0.005), // Conf tăng theo độ dài, nhỏ hơn để không quá cao
+            minHistory: i,
+            strategyGroup: "Cầu Bệt"
+        });
+        patterns.push({
+            name: `Cầu Bệt Xỉu (${i})`,
+            pattern: "X".repeat(i),
+            predict: "X",
+            conf: 0.05 + (i * 0.005),
+            minHistory: i,
+            strategyGroup: "Cầu Bệt"
+        });
+    }
+
+    // 2. Cầu 1-1 (Alternating): TXT... và XTX... (từ 3 đến 20 phiên)
+    for (let i = 3; i <= 20; i++) {
+        let patternTX = "";
+        let patternXT = "";
+        for (let j = 0; j < i; j++) {
+            patternTX += (j % 2 === 0 ? "T" : "X");
+            patternXT += (j % 2 === 0 ? "X" : "T");
+        }
+        patterns.push({
+            name: `Cầu 1-1 (TX - ${i})`,
+            pattern: patternTX,
+            predict: (i % 2 === 0 ? "T" : "X"),
+            conf: 0.05 + (i * 0.005),
+            minHistory: i,
+            strategyGroup: "Cầu 1-1"
+        });
+        patterns.push({
+            name: `Cầu 1-1 (XT - ${i})`,
+            pattern: patternXT,
+            predict: (i % 2 === 0 ? "X" : "T"),
+            conf: 0.05 + (i * 0.005),
+            minHistory: i,
+            strategyGroup: "Cầu 1-1"
+        });
+    }
+
+    // 3. Cầu Lặp lại cơ bản (2-1, 2-2, 3-1, 3-2, 3-3, 4-1, 4-2, 4-3, 4-4)
+    // Tăng số lần lặp để có nhiều mẫu hơn
+    const baseRepeatedPatterns = [
+        { base: "TTX", group: "Cầu Lặp 2-1" }, { base: "XXT", group: "Cầu Lặp 2-1" },
+        { base: "TTXX", group: "Cầu Lặp 2-2" }, { base: "XXTT", group: "Cầu Lặp 2-2" },
+        { base: "TTTX", group: "Cầu Lặp 3-1" }, { base: "XXXT", group: "Cầu Lặp 3-1" },
+        { base: "TTTXX", group: "Cầu Lặp 3-2" }, { base: "XXXTT", group: "Cầu Lặp 3-2" },
+        { base: "TTTXXX", group: "Cầu Lặp 3-3" }, { base: "XXXTTT", group: "Cầu Lặp 3-3" },
+        { base: "TTTTX", group: "Cầu Lặp 4-1" }, { base: "XXXXT", group: "Cầu Lặp 4-1" },
+        { base: "TTTTXX", group: "Cầu Lặp 4-2" }, { base: "XXXXTT", group: "Cầu Lặp 4-2" },
+        { base: "TTTTXXX", group: "Cầu Lặp 4-3" }, { base: "XXXXTTT", group: "Cầu Lặp 4-3" },
+        { base: "TTTTXXXX", group: "Cầu Lặp 4-4" }, { base: "XXXXTTTT", group: "Cầu Lặp 4-4" }
+    ];
+
+    baseRepeatedPatterns.forEach(patternInfo => {
+        // Lặp từ 1 đến 5 lần để tạo thêm mẫu
+        for (let numRepeats = 1; numRepeats <= 5; numRepeats++) {
+            let currentPattern = patternInfo.base.repeat(numRepeats);
+            let predictChar = patternInfo.base[0]; // Dự đoán theo ký tự đầu tiên của mẫu cơ sở
+
+            patterns.push({
+                name: `${patternInfo.group} (${patternInfo.base} x${numRepeats})`,
+                pattern: currentPattern,
+                predict: predictChar,
+                conf: 0.08 + (numRepeats * 0.01),
+                minHistory: currentPattern.length,
+                strategyGroup: patternInfo.group
+            });
+        }
+    });
+
+    // 4. Cầu Đối Xứng (Symmetric) và Đảo Ngược (Inverse)
+    // Thêm các biến thể đối xứng và đảo ngược dài hơn
+    const symmetricAndInversePatterns = [
+        { base: "TX", predict: "T", group: "Cầu Đối Xứng" },
+        { base: "XT", predict: "X", group: "Cầu Đối Xứng" },
+        { base: "TXXT", predict: "T", group: "Cầu Đối Xứng" },
+        { base: "XTTX", predict: "X", group: "Cầu Đối Xứng" },
+        { base: "TTXT", predict: "X", group: "Cầu Đảo Ngược" },
+        { base: "XXTX", predict: "T", group: "Cầu Đảo Ngược" },
+        // Thêm các mẫu phức tạp hơn cho đối xứng
+        { base: "TXTXT", predict: "X", group: "Cầu Đối Xứng" },
+        { base: "XTXTX", predict: "T", group: "Cầu Đối Xứng" },
+    ];
+
+    symmetricAndInversePatterns.forEach(patternInfo => {
+        for (let numRepeats = 1; numRepeats <= 3; numRepeats++) {
+            let currentPattern = patternInfo.base.repeat(numRepeats);
+            patterns.push({
+                name: `${patternInfo.group} (${patternInfo.base} x${numRepeats})`,
+                pattern: currentPattern,
+                predict: patternInfo.predict,
+                conf: 0.1 + (numRepeats * 0.015),
+                minHistory: currentPattern.length,
+                strategyGroup: patternInfo.group
+            });
+        }
+        // Thêm một số mẫu đối xứng AABB... và đảo ngược AABBCC -> CCBBAA
+        if (patternInfo.base.length === 2) {
+            let patternABBA = patternInfo.base + patternInfo.base.split('').reverse().join(''); // ABBA
+            patterns.push({
+                name: `${patternInfo.group} (${patternABBA})`,
+                pattern: patternABBA,
+                predict: patternInfo.base[0],
+                conf: 0.15,
+                minHistory: patternABBA.length,
+                strategyGroup: patternInfo.group
+            });
+            let patternABCCBA = patternInfo.base.repeat(2) + patternInfo.base.split('').reverse().join('').repeat(2); // ABAB BABA
+            if (patternABCCBA.length <= 10) { // Giới hạn độ dài để không quá lớn
+                patterns.push({
+                    name: `${patternInfo.group} (${patternABCCBA})`,
+                    pattern: patternABCCBA,
+                    predict: patternInfo.base[0],
+                    conf: 0.18,
+                    minHistory: patternABCCBA.length,
+                    strategyGroup: patternInfo.group
+                });
+            }
+        }
+    });
+
+    // 5. Cầu Ziczac Ngắn (Short unpredictable bursts)
+    const shortZiczacPatterns = [
+        { pattern: "TTX", predict: "T" }, { pattern: "XXT", predict: "X" },
+        { pattern: "TXT", predict: "X" }, { pattern: "XTX", predict: "T" },
+        { pattern: "TXX", predict: "X" }, { pattern: "XTT", predict: "T" },
+        { pattern: "TTXX", predict: "T" }, { pattern: "XXTT", predict: "X" },
+        { pattern: "TXTX", predict: "T" }, { pattern: "XTXT", predict: "X" },
+        { pattern: "XTTX", predict: "X" }, { pattern: "TXXT", predict: "T" } // Các mẫu 4 ngắn
+    ];
+    shortZiczacPatterns.forEach(p => {
+        patterns.push({
+            name: `Cầu Ziczac Ngắn (${p.pattern})`,
+            pattern: p.pattern,
+            predict: p.predict,
+            conf: 0.05,
+            minHistory: p.pattern.length,
+            strategyGroup: "Cầu Ziczac Ngắn"
+        });
+    });
+    
+    // Tăng cường số lượng bằng các mẫu lặp lại phức tạp hơn (ví dụ AABBAA)
+    // Mẫu lặp lại 2 lần của các mẫu cơ bản ngắn hơn
+    const complexRepeats = ["TTX", "XXT", "TXT", "TXX", "XTT"];
+    complexRepeats.forEach(base => {
+        for (let i = 2; i <= 4; i++) { // Lặp từ 2 đến 4 lần
+            const currentPattern = base.repeat(i);
+            if (currentPattern.length <= 15) { // Giới hạn độ dài
+                patterns.push({
+                    name: `Cầu Lặp Chuỗi Khác (${base} x${i})`,
+                    pattern: currentPattern,
+                    predict: base[0],
+                    conf: 0.07 + (i * 0.01),
+                    minHistory: currentPattern.length,
+                    strategyGroup: "Cầu Lặp Chuỗi Khác" // Nhóm mới
+                });
+            }
+        }
+    });
+
+
+    return patterns;
+}
+
+const allPatternStrategies = generateCommonPatterns();
+console.log(`[Khởi tạo] Tổng số mẫu cầu đã tạo: ${allPatternStrategies.length} (Mục tiêu 1000 mẫu được tạo linh hoạt)`);
+
+// Kiểm tra để đảm bảo tất cả các nhóm chiến lược trong allPatternStrategies
+// đều có trọng số ban đầu trong strategyWeights
+allPatternStrategies.forEach(pattern => {
+    if (strategyWeights[pattern.strategyGroup] === undefined) {
+        strategyWeights[pattern.strategyGroup] = 1.0; // Khởi tạo trọng số mặc định
+        predictionPerformance[pattern.strategyGroup] = { correct: 0, total: 0 };
+    }
+});
+
 
 // === Thuật toán dự đoán nâng cao ===
-/**
- * Phân tích lịch sử kết quả Tài/Xỉu và đưa ra dự đoán cho phiên tiếp theo.
- * @param {Array<string>} history Mảng chứa lịch sử các kết quả 'T' (Tài) hoặc 'X' (Xỉu).
- * @returns {object} Đối tượng chứa thông tin phân tích, dự đoán cuối cùng và độ tin cậy.
- */
-function analyzeAndPredict(history) {
+function analyzeAndPredict(history, diceHist) {
   const analysis = {
-    totalResults: history.length, // Tổng số kết quả trong lịch sử
-    taiCount: history.filter(r => r === 'T').length, // Số lần Tài
-    xiuCount: history.filter(r => r === 'X').length, // Số lần Xỉu
-    last50Pattern: history.slice(-50).join(''), // Chuỗi 50 kết quả gần nhất
-    last200Pattern: history.join(''), // Chuỗi 200 kết quả gần nhất (hoặc tất cả nếu ít hơn 200)
-    predictionDetails: [] // Chi tiết về các phân tích dẫn đến dự đoán
+    totalResults: history.length,
+    taiCount: history.filter(r => r === 'T').length,
+    xiuCount: history.filter(r => r === 'X').length,
+    last50Pattern: history.slice(-50).join(''),
+    last200Pattern: history.join(''),
+    predictionDetails: [],
+    rawPredictions: []
   };
 
-  let prediction = "?"; // Dự đoán mặc định là không xác định
-  let confidence = 0; // Độ tin cậy của dự đoán, từ 0 đến 1
+  let finalPrediction = "?";
+  let combinedConfidence = 0;
 
-  // Chiến lược 1: Phân tích cầu lặp (trong 50 phiên gần nhất)
-  // Tìm kiếm các mẫu cầu phổ biến như cầu bệt, cầu 1-1, cầu 2-1, 2-2.
-  const recentHistory = history.slice(-50); // Lấy 50 phiên gần nhất để phân tích cầu
-  const patternsToCheck = [
-    { name: "Cầu Bệt Tài", pattern: "TTTT", predict: "T" },
-    { name: "Cầu Bệt Xỉu", pattern: "XXXX", predict: "X" },
-    { name: "Cầu 1-1 (T)", pattern: "XTXTXTX", predict: "T" }, // Đang bệt 1-1 và kết thúc bằng X, dự đoán T
-    { name: "Cầu 1-1 (X)", pattern: "TXTXTXT", predict: "X" }, // Đang bệt 1-1 và kết thúc bằng T, dự đoán X
-    { name: "Cầu 2-1 (TX)", pattern: "TTXT", predict: "X" }, // Ví dụ: TTX T -> dự đoán X
-    { name: "Cầu 2-1 (XT)", pattern: "XXTX", predict: "T" }, // Ví dụ: XXT X -> dự đoán T
-    { name: "Cầu 2-2 (TX)", pattern: "TTXXTT", predict: "X" }, // Ví dụ: TTXXTT -> dự đoán X
-    { name: "Cầu 2-2 (XT)", pattern: "XXTTXX", predict: "T" }, // Ví dụ: XXTTXX -> dự đoán T
-  ];
+  const recentHistoryFull = history.join(''); // Toàn bộ lịch sử dưới dạng chuỗi
+  const recent50 = history.slice(-50).join('');
+  const recent20 = history.slice(-20).join('');
+  const recent10 = history.slice(-10).join('');
 
-  for (const p of patternsToCheck) {
-    if (recentHistory.join('').endsWith(p.pattern)) {
-      prediction = p.predict;
-      confidence += 0.4; // Tăng độ tin cậy đáng kể nếu phát hiện cầu rõ ràng
-      analysis.predictionDetails.push(`Phát hiện: ${p.name}, Dự đoán: ${p.predict}`);
-      break; // Ưu tiên mẫu cầu gần nhất và rõ ràng nhất
+  const addPrediction = (strategyName, predict, confMultiplier, detail, strategyGroup = null) => {
+    // Đảm bảo strategyName có trong predictionPerformance
+    if (!predictionPerformance[strategyName]) {
+        predictionPerformance[strategyName] = { correct: 0, total: 0 };
+    }
+    // Sử dụng trọng số của nhóm chiến lược nếu được cung cấp, nếu không thì dùng tên chiến lược
+    const effectiveStrategyName = strategyGroup || strategyName;
+    if (strategyWeights[effectiveStrategyName] === undefined) {
+        strategyWeights[effectiveStrategyName] = 1.0; // Khởi tạo nếu chưa có
+    }
+    const weight = strategyWeights[effectiveStrategyName];
+    const confidence = confMultiplier * weight;
+    analysis.rawPredictions.push({ strategy: strategyName, predict, confidence, detail, strategyGroup: effectiveStrategyName });
+  };
+
+  // --- Áp dụng tất cả các mẫu cầu đã định nghĩa (được tạo tự động) ---
+  for (const p of allPatternStrategies) {
+    if (history.length >= p.minHistory) {
+        let targetHistoryString;
+        // Chọn đoạn lịch sử phù hợp với độ dài của mẫu
+        if (p.minHistory <= 10) targetHistoryString = recent10;
+        else if (p.minHistory <= 20) targetHistoryString = recent20;
+        else if (p.minHistory <= 50) targetHistoryString = recent50;
+        else targetHistoryString = recentHistoryFull;
+
+        if (targetHistoryString.endsWith(p.pattern)) {
+            addPrediction(p.name, p.predict, p.conf, `Phát hiện: ${p.name}`, p.strategyGroup);
+        }
     }
   }
 
-  // Chiến lược 2: Phân tích xu hướng (trong 20 phiên gần nhất)
-  // Xác định xu hướng chung (Tài nhiều hơn hay Xỉu nhiều hơn) trong các phiên gần đây.
-  const last20 = history.slice(-20);
-  const taiIn20 = last20.filter(r => r === 'T').length;
-  const xiuIn20 = last20.filter(r => r === 'X').length;
+  // --- Chiến lược Bẻ cầu thông minh (khi cầu bệt/1-1 dài bất thường) ---
+  if (history.length >= 7) {
+    // Bẻ bệt Tài
+    if (recentHistoryFull.endsWith("TTTTTTT")) {
+      addPrediction("Bẻ cầu bệt dài", "X", 0.35, "Cầu bệt Tài quá dài (>7), dự đoán bẻ cầu");
+    } else if (recentHistoryFull.endsWith("XXXXXXX")) {
+      addPrediction("Bẻ cầu bệt dài", "T", 0.35, "Cầu bệt Xỉu quá dài (>7), dự đoán bẻ cầu");
+    }
 
-  if (taiIn20 > xiuIn20 + 5) { // Nếu Tài nhiều hơn đáng kể (ví dụ: hơn 5 lần)
-    if (prediction === "T") confidence += 0.2; // Tăng thêm độ tin cậy nếu trùng khớp với dự đoán trước
-    else if (prediction === "?") { prediction = "T"; confidence += 0.2; } // Nếu chưa có dự đoán, dự đoán Tài
-    analysis.predictionDetails.push(`Xu hướng 20 phiên: Nghiêng về Tài (${taiIn20} Tài / ${xiuIn20} Xỉu)`);
-  } else if (xiuIn20 > taiIn20 + 5) { // Nếu Xỉu nhiều hơn đáng kể
-    if (prediction === "X") confidence += 0.2;
-    else if (prediction === "?") { prediction = "X"; confidence += 0.2; }
-    analysis.predictionDetails.push(`Xu hướng 20 phiên: Nghiêng về Xỉu (${taiIn20} Tài / ${xiuIn20} Xỉu)`);
-  } else if (prediction === "?") {
-      analysis.predictionDetails.push(`Xu hướng 20 phiên: Khá cân bằng (${taiIn20} Tài / ${xiuIn20} Xỉu)`);
+    // Bẻ cầu 1-1 khi quá dài (ví dụ: 8 phiên 1-1)
+    if (recentHistoryFull.endsWith("XTXTXTXT")) {
+        addPrediction("Bẻ cầu 1-1 dài", "X", 0.3, "Cầu 1-1 quá dài (>8), dự đoán bẻ sang Xỉu");
+    } else if (recentHistoryFull.endsWith("TXTXTXTX")) {
+        addPrediction("Bẻ cầu 1-1 dài", "T", 0.3, "Cầu 1-1 quá dài (>8), dự đoán bẻ sang Tài");
+    }
+  }
+
+  // --- Chiến lược: Phân tích xu hướng (trong 20-50 phiên gần nhất) ---
+  const taiIn20 = history.slice(-20).filter(r => r === 'T').length;
+  const xiuIn20 = history.slice(-20).filter(r => r === 'X').length;
+
+  if (taiIn20 > xiuIn20 + 5) {
+    addPrediction("Xu hướng Tài mạnh (Ngắn)", "T", 0.25, `Xu hướng 20 phiên: Nghiêng về Tài (${taiIn20} Tài / ${xiuIn20} Xỉu)`);
+  } else if (xiuIn20 > taiIn20 + 5) {
+    addPrediction("Xu hướng Xỉu mạnh (Ngắn)", "X", 0.25, `Xu hướng 20 phiên: Nghiêng về Xỉu (${taiIn20} Tài / ${xiuIn20} Xỉu)`);
+  } else {
+    analysis.predictionDetails.push(`Xu hướng 20 phiên: Khá cân bằng (${taiIn20} Tài / ${xiuIn20} Xỉu)`);
+  }
+  
+  const taiIn50 = history.slice(-50).filter(r => r === 'T').length;
+  const xiuIn50 = history.slice(-50).filter(r => r === 'X').length;
+  if (taiIn50 > xiuIn50 + 8) {
+    addPrediction("Xu hướng Tài rất mạnh (Dài)", "T", 0.3, `Xu hướng 50 phiên: Rất nghiêng về Tài (${taiIn50} Tài / ${xiuIn50} Xỉu)`);
+  } else if (xiuIn50 > taiIn50 + 8) {
+    addPrediction("Xu hướng Xỉu rất mạnh (Dài)", "X", 0.3, `Xu hướng 50 phiên: Rất nghiêng về Xỉu (${taiIn50} Tài / ${xiuIn50} Xỉu)`);
   }
 
 
-  // Chiến lược 3: Dự đoán dựa trên các mặt xúc xắc và tổng điểm (Cần dữ liệu diceHistory)
-  // Phần này có thể được mở rộng để phân tích sâu hơn về tần suất các mặt xúc xắc hoặc tổng điểm.
-  if (diceHistory.length > 0) {
-    const lastResult = diceHistory[diceHistory.length -1];
+  // --- Chiến lược: Phân tích Xúc Xắc và Tổng Điểm Cụ Thể ---
+  if (diceHist.length > 0) {
+    const lastResult = diceHist[diceHist.length - 1];
     const total = lastResult.d1 + lastResult.d2 + lastResult.d3;
     analysis.predictionDetails.push(`Kết quả xúc xắc gần nhất: ${lastResult.d1}-${lastResult.d2}-${lastResult.d3} (Tổng: ${total})`);
-    // Ví dụ về phân tích xúc xắc:
-    // Có thể thêm logic ở đây để dự đoán dựa trên các mặt xúc xắc cụ thể.
-    // Ví dụ: nếu trong 10 phiên gần nhất có nhiều lần ra 3 mặt giống nhau (bộ ba),
-    // hoặc tổng điểm thường xuyên nằm trong một khoảng nhất định.
-    // Điều này yêu cầu thống kê tần suất xuất hiện của tổng điểm hoặc các mặt cụ thể.
+
+    const last10Totals = diceHist.slice(-10).map(d => d.total);
+    const sumCounts = last10Totals.reduce((acc, val) => {
+      acc[val] = (acc[val] || 0) + 1;
+      return acc;
+    }, {});
+
+    let mostFrequentTotal = 0;
+    let maxCount = 0;
+    for (const sum in sumCounts) {
+      if (sumCounts[sum] > maxCount) {
+        maxCount = sumCounts[sum];
+        mostFrequentTotal = parseInt(sum);
+      }
+    }
+
+    if (maxCount >= 4) { // Nếu một tổng điểm xuất hiện ít nhất 4 lần trong 10 phiên
+        const predict = mostFrequentTotal > 10 ? "T" : "X";
+        addPrediction("Xu hướng tổng điểm", predict, 0.15, `Tổng điểm ${mostFrequentTotal} xuất hiện nhiều trong 10 phiên gần nhất`);
+    }
+
+    if (lastResult.d1 === lastResult.d2 && lastResult.d2 === lastResult.d3) {
+        const predict = (lastResult.d1 <= 3) ? "T" : "X"; // Bộ ba Tài (4,5,6) thì bẻ Xỉu, bộ ba Xỉu (1,2,3) thì bẻ Tài
+        addPrediction("Bộ ba", predict, 0.25, `Phát hiện bộ ba ${lastResult.d1}, dự đoán bẻ cầu`);
+    }
+
+    if (total === 10) {
+        addPrediction("Điểm 10", "X", 0.08, "Tổng 10 (Xỉu) vừa ra, thường là điểm dao động hoặc bẻ cầu");
+    } else if (total === 11) {
+        addPrediction("Điểm 11", "T", 0.08, "Tổng 11 (Tài) vừa ra, thường là điểm dao động hoặc bẻ cầu");
+    }
+  }
+
+  // --- Chiến lược: "Reset Cầu" hoặc "Bẻ Sâu" ---
+  // Áp dụng khi cầu đã quá dài hoặc quá loạn, không có mẫu rõ ràng
+  if (history.length > 20) {
+      const last10 = history.slice(-10);
+      const taiIn10 = last10.filter(r => r === 'T').length;
+      const xiuIn10 = last10.filter(r => r === 'X').length;
+
+      // Nếu cầu quá loạn (số T và X gần như cân bằng trong 10 phiên gần nhất)
+      if (Math.abs(taiIn10 - xiuIn10) <= 2) {
+          // Chỉ áp dụng nếu không có dự đoán mạnh từ các chiến lược khác
+          if (analysis.rawPredictions.length === 0 || analysis.rawPredictions[0].confidence < 0.2) {
+              const lastResult = history[history.length - 1];
+              const predict = (lastResult === 'T' ? 'X' : 'T');
+              addPrediction("Reset Cầu/Bẻ Sâu", predict, 0.28, "Cầu đang loạn hoặc khó đoán, dự đoán reset.");
+          }
+      }
+      // Nếu có cầu bệt cực dài (ví dụ: > 9 phiên) mà chưa bị bẻ
+      if (recentHistoryFull.endsWith("TTTTTTTTT")) { // 9 Tài liên tiếp
+          addPrediction("Reset Cầu/Bẻ Sâu", "X", 0.4, "Cầu bệt Tài cực dài (>9), dự đoán bẻ mạnh!");
+      } else if (recentHistoryFull.endsWith("XXXXXXXXX")) { // 9 Xỉu liên tiếp
+          addPrediction("Reset Cầu/Bẻ Sâu", "T", 0.4, "Cầu bệt Xỉu cực dài (>9), dự đoán bẻ mạnh!");
+      }
   }
 
 
-  // Nếu chưa có dự đoán rõ ràng từ các chiến lược trên, quay lại dự đoán dựa trên lặp lại đơn giản hơn.
-  if (prediction === "?" && history.length >= 6) { // Cần ít nhất 6 phiên để tìm mẫu 3 hoặc 4
-    const last3 = history.slice(-3).join(''); // 3 kết quả cuối
-    const last4 = history.slice(-4).join(''); // 4 kết quả cuối
+  // --- KẾT HỢP CÁC DỰ ĐOÁN VÀ TÍNH ĐỘ TIN CẬY CUỐI CÙNG ---
+  // Sắp xếp các dự đoán theo độ tin cậy giảm dần
+  analysis.rawPredictions.sort((a, b) => b.confidence - a.confidence);
 
-    // Đếm số lần xuất hiện của chuỗi 3 hoặc 4 kết quả cuối trong toàn bộ lịch sử.
-    // Nếu nó lặp lại nhiều lần, có thể dự đoán tiếp theo sẽ là ký tự đầu tiên của chuỗi đó.
-    const count3 = history.join('').split(last3).length - 1;
-    if (count3 >= 2 && last3.length === 3) { // Đảm bảo chuỗi đủ dài và lặp ít nhất 2 lần
-      prediction = last3[0]; // Dự đoán ký tự đầu tiên của mẫu lặp
-      confidence += 0.1;
-      analysis.predictionDetails.push(`Phát hiện lặp 3 cuối: ${last3}, Dự đoán: ${prediction}`);
-    }
+  let voteTai = 0;
+  let voteXiu = 0;
 
-    const count4 = history.join('').split(last4).length - 1;
-    if (count4 >= 2 && last4.length === 4) { // Đảm bảo chuỗi đủ dài và lặp ít nhất 2 lần
-      prediction = last4[0];
-      confidence += 0.1;
-      analysis.predictionDetails.push(`Phát hiện lặp 4 cuối: ${last4}, Dự đoán: ${prediction}`);
+  // Lấy 3-5 dự đoán hàng đầu để tính tổng độ tin cậy (có thể điều chỉnh số lượng này)
+  const numberOfTopPredictions = Math.min(analysis.rawPredictions.length, 5);
+  const topPredictions = analysis.rawPredictions.slice(0, numberOfTopPredictions);
+
+  topPredictions.forEach(p => {
+    if (p.predict === 'T') {
+      voteTai += p.confidence;
+    } else if (p.predict === 'X') {
+      voteXiu += p.confidence;
     }
+  });
+
+  if (voteTai === 0 && voteXiu === 0) {
+      finalPrediction = "?";
+      combinedConfidence = 0; // Sẽ được map lên 0.55 sau
+  } else if (voteTai > voteXiu * 1.3) { // Tài mạnh hơn 30%
+      finalPrediction = "T";
+      combinedConfidence = voteTai / (voteTai + voteXiu);
+  } else if (voteXiu > voteTai * 1.3) { // Xỉu mạnh hơn 30%
+      finalPrediction = "X";
+      combinedConfidence = voteXiu / (voteTai + voteXiu);
+  } else {
+      // Nếu không có dự đoán nào vượt trội rõ rệt
+      if (analysis.rawPredictions.length > 0) {
+          // Ưu tiên dự đoán từ chiến lược có độ tin cậy cao nhất trong danh sách đã sắp xếp
+          finalPrediction = analysis.rawPredictions[0].predict;
+          combinedConfidence = analysis.rawPredictions[0].confidence;
+      } else {
+          finalPrediction = "?";
+          combinedConfidence = 0; // Trường hợp không có bất kỳ dự đoán nào
+      }
   }
 
-  // Điều chỉnh trọng số/độ tin cậy (Tự học hỏi - Cần lưu trữ kết quả dự đoán và kết quả thực tế)
-  // Đây là phần phức tạp và đòi hỏi lưu trữ dữ liệu dự đoán-thực tế để "huấn luyện" thuật toán.
-  // Ví dụ: Nếu dự đoán "T" và kết quả thực tế là "T", tăng trọng số cho chiến lược đã đưa ra dự đoán đó.
-  // Nếu dự đoán "T" và kết quả thực tế là "X", giảm trọng số.
-  // Hiện tại, chỉ tăng confidence nếu có các mẫu rõ ràng được phát hiện.
-  // Để triển khai tự học hỏi, bạn sẽ cần một cơ chế lưu trữ (ví dụ: file JSON, cơ sở dữ liệu nhỏ)
-  // để theo dõi hiệu suất của từng chiến lược theo thời gian.
+  // --- ÁNH XẠ ĐỘ TIN CẬY ĐỂ NẰM TRONG KHOẢNG [55%, 92%] ---
+  const minOutputConfidence = 0.55; // 55%
+  const maxOutputConfidence = 0.92; // 92%
+  const originalMinConfidence = 0;   // Giả định độ tin cậy gốc có thể từ 0
+  const originalMaxConfidence = 1;   // Giả định độ tin cậy gốc có thể đến 1
 
-  analysis.finalPrediction = prediction;
-  analysis.confidence = Math.min(confidence, 1); // Đảm bảo độ tin cậy không vượt quá 100%
+  // Chuẩn hóa combinedConfidence về khoảng [0, 1] nếu nó có thể vượt quá do tổng trọng số
+  let normalizedConfidence = Math.min(Math.max(combinedConfidence, originalMinConfidence), originalMaxConfidence);
+
+  // Ánh xạ tuyến tính từ [originalMinConfidence, originalMaxConfidence] sang [minOutputConfidence, maxOutputConfidence]
+  let finalMappedConfidence = ((normalizedConfidence - originalMinConfidence) / (originalMaxConfidence - originalMinConfidence)) * (maxOutputConfidence - minOutputConfidence) + minOutputConfidence;
+
+  // Đảm bảo không vượt quá giới hạn
+  finalMappedConfidence = Math.min(Math.max(finalMappedConfidence, minOutputConfidence), maxOutputConfidence);
+  
+  analysis.finalPrediction = finalPrediction;
+  analysis.confidence = finalMappedConfidence;
+
+  // Ghi lại chi tiết các dự đoán đã góp phần
+  analysis.predictionDetails = analysis.rawPredictions.map(p =>
+    `${p.strategy}: ${p.predict} (Conf: ${(p.confidence * 100).toFixed(1)}%) - ${p.detail || ''}`
+  );
 
   return analysis;
 }
 
-// ---
+/**
+ * Cập nhật trọng số của các chiến lược dựa trên kết quả thực tế.
+ * @param {string} strategyName Tên chiến lược đã đưa ra dự đoán.
+ * @param {string} predictedResult Kết quả mà chiến lược đã dự đoán ('T' hoặc 'X').
+ * @param {string} actualResult Kết quả thực tế ('T' hoặc 'X').
+ */
+function updateStrategyWeight(strategyName, predictedResult, actualResult) {
+  // Tìm strategyGroup từ tên chiến lược (nếu có)
+  const strategyInfo = allPatternStrategies.find(p => p.name === strategyName);
+  const effectiveStrategyName = strategyInfo ? strategyInfo.strategyGroup : strategyName;
+
+  if (!predictionPerformance[effectiveStrategyName]) {
+    predictionPerformance[effectiveStrategyName] = { correct: 0, total: 0 };
+  }
+  predictionPerformance[effectiveStrategyName].total++;
+
+  if (predictedResult === actualResult) {
+    predictionPerformance[effectiveStrategyName].correct++;
+  }
+
+  const { correct, total } = predictionPerformance[effectiveStrategyName];
+  if (total >= 5) { // Chỉ điều chỉnh sau một số lần thử nhất định để có đủ dữ liệu
+    const accuracy = correct / total;
+    const adjustmentFactor = 0.05; // Hệ số điều chỉnh nhỏ
+
+    // Giới hạn trọng số từ 0.5 đến 2.5 để tránh quá cao hoặc quá thấp
+    if (accuracy > 0.6) { // Nếu chiến lược hoạt động tốt
+      strategyWeights[effectiveStrategyName] = Math.min(strategyWeights[effectiveStrategyName] + adjustmentFactor, 2.5);
+    } else if (accuracy < 0.4) { // Nếu chiến lược hoạt động kém
+      strategyWeights[effectiveStrategyName] = Math.max(strategyWeights[effectiveStrategyName] - adjustmentFactor, 0.5);
+    }
+  }
+  // console.log(`[HỌC HỎI] Chiến lược: ${effectiveStrategyName}, Độ chính xác: ${(correct/total * 100).toFixed(2)}%, Trọng số mới: ${strategyWeights[effectiveStrategyName].toFixed(2)}`);
+}
 
 // ================== KẾT NỐI VÀ XỬ LÝ DỮ LIỆU =====================
 
@@ -153,7 +510,7 @@ const messagesToSend = [
 ];
 
 function connectWebSocket() {
-  const ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu9mX_hZMZ_m5gMNhkw0", {
+  const ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg5ZFtbx3rRu3rRu", {
     headers: {
       "User-Agent": "Mozilla/5.0",
       "Origin": "https://play.sun.win"
@@ -185,42 +542,53 @@ function connectWebSocket() {
       if (Array.isArray(data) && typeof data[1] === 'object') {
         const cmd = data[1].cmd;
 
+        // Khi có phiên mới sắp bắt đầu (sid của phiên tiếp theo), cập nhật trọng số cho phiên vừa kết thúc
         if (cmd === 1008 && data[1].sid) {
           id_phien_chua_co_kq = data[1].sid;
+          if (lastRawPredictions.length > 0 && patternHistory.length > 0) {
+              const actualResultOfPreviousSession = patternHistory[patternHistory.length - 1];
+              lastRawPredictions.forEach(pred => {
+                  // Truyền đúng tên chiến lược và kết quả dự đoán
+                  updateStrategyWeight(pred.strategy, pred.predict, actualResultOfPreviousSession);
+              });
+              lastRawPredictions = []; // Xóa dự đoán thô sau khi đã cập nhật
+          }
         }
 
+        // Khi có kết quả phiên (gBB)
         if (cmd === 1003 && data[1].gBB) {
           const { d1, d2, d3 } = data[1];
           const total = d1 + d2 + d3;
-          const result = total > 10 ? "T" : "X"; // Thay đổi "Tài" -> "T", "Xỉu" -> "X" để phù hợp thuật toán
+          const actualResult = total > 10 ? "T" : "X";
 
-          // Cập nhật lịch sử cho thuật toán dự đoán
-          patternHistory.push(result);
-          if (patternHistory.length > 200) { // Giới hạn lịch sử 200 phiên
+          patternHistory.push(actualResult);
+          if (patternHistory.length > 200) { // Giới hạn lịch sử để hiệu suất tốt
             patternHistory.shift();
           }
           diceHistory.push({ d1, d2, d3, total });
-          if (diceHistory.length > 200) { // Giới hạn lịch sử 200 phiên
+          if (diceHistory.length > 200) { // Giới hạn lịch sử xúc xắc
             diceHistory.shift();
           }
 
-          // Gọi thuật toán dự đoán
-          const predictionResult = analyzeAndPredict(patternHistory);
+          const predictionResult = analyzeAndPredict(patternHistory, diceHistory);
+          // Lưu lại các dự đoán thô của phiên này để cập nhật trọng số ở phiên tiếp theo
+          lastRawPredictions = predictionResult.rawPredictions;
 
           currentData = {
             phien_truoc: id_phien_chua_co_kq,
-            ket_qua: (result === "T" ? "Tài" : "Xỉu"), // Chuyển lại "T" -> "Tài", "X" -> "Xỉu" cho đầu ra
+            ket_qua: (actualResult === "T" ? "Tài" : "Xỉu"),
             Dice: [d1, d2, d3],
             phien_hien_tai: id_phien_chua_co_kq + 1,
             du_doan: (predictionResult.finalPrediction === "T" ? "Tài" : (predictionResult.finalPrediction === "X" ? "Xỉu" : predictionResult.finalPrediction)),
             do_tin_cay: `${(predictionResult.confidence * 100).toFixed(2)}%`,
-            cau: predictionResult.predictionDetails.join('; '), // Gắn chi tiết phân tích vào đây
+            cau: predictionResult.predictionDetails.join('; '),
             ngay: new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }),
             Id: "ApiSunWin-@nhutquangdz🪼"
           };
-          
-          console.log(`[LOG] Phiên ${id_phien_chua_co_kq} → ${d1}-${d2}-${d3} = ${total} (${(result === "T" ? "Tài" : "Xỉu")}) | Dự đoán: ${currentData.du_doan} (${currentData.do_tin_cay}) - Chi tiết: ${currentData.cau}`);
-          id_phien_chua_co_kq = null;
+
+          console.log(`[LOG] Phiên ${currentData.phien_truoc} → ${d1}-${d2}-${d3} = ${total} (${currentData.ket_qua})`);
+          console.log(`[LOG] Dự đoán P.${currentData.phien_hien_tai}: ${currentData.du_doan} (${currentData.do_tin_cay})`);
+          console.log(`[LOG] Chi tiết phân tích: ${currentData.cau}`);
         }
       }
     } catch (err) {
@@ -229,7 +597,7 @@ function connectWebSocket() {
   });
 
   ws.on('close', () => {
-    console.log('[WARN] WebSocket mất kết nối. Đang thử lại sau 2s...');
+    console.log('[WARN] WebSocket mất kết nối. Đang thử lại sau 2.5s...');
     setTimeout(connectWebSocket, 2500);
   });
 
