@@ -19,17 +19,17 @@ let id_phien_chua_co_kq = null;
 let patternHistory = []; // Lưu dãy T/X gần nhất (lên đến 200 phiên)
 let diceHistory = []; // Lưu lịch sử các mặt xúc xắc
 
-// === Danh sách tin nhắn gửi lên server WebSocket đã được CẬP NHẬT ===
+// === Danh sách tin nhắn gửi lên server WebSocket ===
 const messagesToSend = [
-  [1, "MiniGame", "SC_thataoduocko112233", "112233", {
-    "info": "{\"ipAddress\":\"2402:800:62cd:ef90:a445:40de:a24a:765e\",\"userId\":\"1a46e9cd-135d-4f29-9cd5-0b61bd2fb2a9\",\"username\":\"SC_thataoduocko112233\",\"timestamp\":1752257356729,\"refreshToken\":\"fe70e712cf3c4737a4ae22cbb3700c8e.f413950acf984ed6b373906f83a4f796\"}",
-    "signature": "16916AC7F4F163CD00B319824B5B90FFE11BC5E7D232D58E7594C47E271A5CDE0492BB1C3F3FF20171B3A344BEFEAA5C4E9D28800CF18880FEA6AC3770016F2841FA847063B80AF8C8A747A689546CE75E99A7B559612BC30FBA5FED9288B69013C099FD6349ABC2646D5ECC2D5B2A1C5A9817FE5587844B41C752D0A0F6F304"
+  [1, "MiniGame", "SC_apisunwin123", "binhlamtool90", {
+    "info": "{\"ipAddress\":\"2a09:bac1:7aa0:10::2e5:4d\",\"userId\":\"d93d3d84-f069-4b3f-8dac-b4716a812143\",\"username\":\"SC_apisunwin123\",\"timestamp\":1752045925640,\"refreshToken\":\"dd38d05401bb48b4ac3c2f6dc37f36d9.f22dccad89bb4e039814b7de64b05d63\"}",
+    "signature": "6FAD7CF6196AFBF0380BC69B59B653A05153D3D0E4E9A07BA43890CC3FB665B92C2E09E5B34B31FD8D74BDCB3B03A29255C5A5C7DFB426A8D391836CF9DCB7E5CEA743FE07521075DED70EFEC7F78C8993BDBF8626D58D3E68D36832CA4823F516B7E41DB353EA79290367D34DF98381089E69EA7C67FB3588B39C9C4D7174B2"
   }],
   [6, "MiniGame", "taixiuPlugin", { cmd: 1005 }],
   [6, "MiniGame", "lobbyPlugin", { cmd: 10001 }]
 ];
 
-// === Thuật toán dự đoán nâng cao (giữ nguyên như phiên bản trước) ===
+// === Thuật toán dự đoán nâng cao ===
 function analyzeAndPredict(history) {
   const analysis = {
     totalResults: history.length,
@@ -82,10 +82,23 @@ function analyzeAndPredict(history) {
       analysis.predictionDetails.push(`Xu hướng 20 phiên: Khá cân bằng (${taiIn20} Tài / ${xiuIn20} Xỉu)`);
   }
 
+
+  // Chiến lược 3: Dự đoán dựa trên các mặt xúc xắc và tổng điểm (Cần dữ liệu diceHistory)
+  // Để triển khai đầy đủ phần này, cần lưu chi tiết các mặt xúc xắc (d1, d2, d3) vào diceHistory
+  // Ví dụ:
+  // if (diceHistory.length > 5) {
+  //   const lastDice = diceHistory[diceHistory.length - 1];
+  //   // Phân tích các mặt xúc xắc cụ thể, ví dụ: nếu hay ra 3 con 1, 3 con 6
+  //   // Nếu tổng điểm hay ra ở mức thấp (4-7) hoặc cao (14-17)
+  //   // Điều này yêu cầu phân tích thống kê sâu hơn
+  // }
   if (diceHistory.length > 0) {
     const lastResult = diceHistory[diceHistory.length -1];
     const total = lastResult.d1 + lastResult.d2 + lastResult.d3;
     analysis.predictionDetails.push(`Kết quả xúc xắc gần nhất: ${lastResult.d1}-${lastResult.d2}-${lastResult.d3} (Tổng: ${total})`);
+    // Ví dụ về phân tích xúc xắc:
+    // Nếu tổng điểm thường xuyên nằm ở khoảng 8-13 (khó đoán hơn), hoặc 4-7 (xỉu), 14-17 (tài)
+    // Cần thống kê tần suất xuất hiện của tổng điểm
   }
 
 
@@ -109,21 +122,25 @@ function analyzeAndPredict(history) {
     }
   }
 
+  // Điều chỉnh trọng số/độ tin cậy (Tự học hỏi - Cần lưu trữ kết quả dự đoán và kết quả thực tế)
+  // Đây là phần phức tạp nhất, yêu cầu một cơ sở dữ liệu nhỏ hoặc lưu vào file để ghi lại
+  // "Nếu tôi dự đoán X và nó ra X, thì tăng trọng số cho chiến lược đó."
+  // "Nếu tôi dự đoán X và nó ra T, thì giảm trọng số cho chiến lược đó."
+  // Hiện tại, chỉ tăng confidence nếu có các mẫu rõ ràng.
+
   analysis.finalPrediction = prediction;
   analysis.confidence = Math.min(confidence, 1); // Đảm bảo confidence không vượt quá 1
 
   return analysis;
 }
 
-// === WebSocket ===
-let ws = null;
-let pingInterval = null;
-let reconnectTimeout = null;
+let ws; // Khai báo biến ws ở phạm vi toàn cục
+let pingInterval;
+let reconnectTimeout;
 let isManuallyClosed = false;
 
 function connectWebSocket() {
-  // Đã cập nhật URL WebSocket tại đây!
-  ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfdGhhdGFvZHVvY2tvMTEyMjMzIn0.1x7oXyG4y2_D_Lz5C9qL9fA7cM6N8L7k8n0t7J4gJ8A", {
+  ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu9mX_hZMZ_m5gMNhkw0", {
     headers: {
       "User-Agent": "Mozilla/5.0",
       "Origin": "https://play.sun.win"
@@ -132,7 +149,7 @@ function connectWebSocket() {
 
   ws.on('open', () => {
     console.log('[✅] WebSocket kết nối');
-    isManuallyClosed = false;
+    isManuallyClosed = false; // Đặt lại cờ khi kết nối thành công
     messagesToSend.forEach((msg, i) => {
       setTimeout(() => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -165,7 +182,7 @@ function connectWebSocket() {
         if (cmd === 1003 && data[1].gBB) {
           const { d1, d2, d3 } = data[1];
           const total = d1 + d2 + d3;
-          const result = total > 10 ? "T" : "X"; // T hoặc X để khớp với logic dự đoán
+          const result = total > 10 ? "T" : "X"; // Tài / Xỉu
 
           // Lưu lịch sử xúc xắc
           diceHistory.push({ d1, d2, d3, total, result });
@@ -209,7 +226,7 @@ function connectWebSocket() {
 
   ws.on('error', (err) => {
     console.error('[❌] WebSocket lỗi:', err.message);
-    ws.close();
+    ws.close(); // Đảm bảo đóng kết nối để kích hoạt reconnect
   });
 }
 
