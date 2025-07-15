@@ -153,7 +153,7 @@ const messagesToSend = [
 ];
 
 function connectWebSocket() {
-  const ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg9ZFtbx3rRu9mX_hZMZ_m5gMNhkw0", {
+  const ws = new WebSocket("wss://websocket.azhkthg1.net/websocket?token=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJhbW91bnQiOjAsInVzZXJuYW1lIjoiU0NfYXBpc3Vud2luMTIzIn0.hgrRbSV6vnBwJMg5ZFtbx3rRu9mX_hZMZ_m5gMNhkw0", {
     headers: {
       "User-Agent": "Mozilla/5.0",
       "Origin": "https://play.sun.win"
@@ -161,23 +161,25 @@ function connectWebSocket() {
   });
 
   ws.on('open', () => {
-    console.log('[LOG] WebSocket kết nối');
+    console.log('[LOG] WebSocket kết nối thành công!');
+    // Gửi các tin nhắn khởi tạo sau khi kết nối
     messagesToSend.forEach((msg, i) => {
       setTimeout(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify(msg));
         }
-      }, i * 600);
+      }, i * 600); // Giãn cách thời gian gửi tin nhắn
     });
 
+    // Giữ kết nối sống bằng cách gửi ping định kỳ
     setInterval(() => {
       if (ws.readyState === WebSocket.OPEN) {
         ws.ping();
       }
-    }, 15000);
+    }, 15000); // Gửi ping mỗi 15 giây
   });
 
-  ws.on('pong', () => console.log('[LOG] Ping OK'));
+  ws.on('pong', () => console.log('[LOG] Nhận phản hồi Ping. Kết nối ổn định.'));
 
   ws.on('message', (message) => {
     try {
@@ -185,10 +187,15 @@ function connectWebSocket() {
       if (Array.isArray(data) && typeof data[1] === 'object') {
         const cmd = data[1].cmd;
 
+        // Xử lý CMD 1008: Nhận ID phiên mới (chưa có kết quả)
         if (cmd === 1008 && data[1].sid) {
           id_phien_chua_co_kq = data[1].sid;
+          // Cập nhật phien_hien_tai ngay lập tức khi có ID phiên mới
+          currentData.phien_hien_tai = id_phien_chua_co_kq + 1;
+          console.log(`[LOG] Đã nhận ID phiên mới: ${id_phien_chua_co_kq}. Phiên tiếp theo: ${currentData.phien_hien_tai}`);
         }
 
+        // Xử lý CMD 1003: Nhận kết quả phiên (khi phiên kết thúc)
         if (cmd === 1003 && data[1].gBB) {
           const { d1, d2, d3 } = data[1];
           const total = d1 + d2 + d3;
@@ -207,11 +214,12 @@ function connectWebSocket() {
           // Gọi thuật toán dự đoán
           const predictionResult = analyzeAndPredict(patternHistory);
 
+          // Cập nhật dữ liệu hiện tại
           currentData = {
-            phien_truoc: id_phien_chua_co_kq,
+            phien_truoc: id_phien_chua_co_kq, // Phiên vừa kết thúc
             ket_qua: (result === "T" ? "Tài" : "Xỉu"), // Chuyển lại "T" -> "Tài", "X" -> "Xỉu" cho đầu ra
             Dice: [d1, d2, d3],
-            phien_hien_tai: id_phien_chua_co_kq + 1,
+            phien_hien_tai: (id_phien_chua_co_kq ? id_phien_chua_co_kq + 1 : null), // Phiên tiếp theo
             du_doan: (predictionResult.finalPrediction === "T" ? "Tài" : (predictionResult.finalPrediction === "X" ? "Xỉu" : predictionResult.finalPrediction)),
             do_tin_cay: `${(predictionResult.confidence * 100).toFixed(2)}%`,
             cau: predictionResult.predictionDetails.join('; '), // Gắn chi tiết phân tích vào đây
@@ -220,31 +228,43 @@ function connectWebSocket() {
           };
           
           console.log(`[LOG] Phiên ${id_phien_chua_co_kq} → ${d1}-${d2}-${d3} = ${total} (${(result === "T" ? "Tài" : "Xỉu")}) | Dự đoán: ${currentData.du_doan} (${currentData.do_tin_cay}) - Chi tiết: ${currentData.cau}`);
+          
+          // Reset id_phien_chua_co_kq sau khi đã xử lý kết quả
           id_phien_chua_co_kq = null;
         }
       }
     } catch (err) {
-      console.error('[ERROR] Lỗi xử lý dữ liệu:', err.message);
+      console.error('[ERROR] Lỗi xử lý dữ liệu tin nhắn:', err.message);
     }
   });
 
-  ws.on('close', () => {
-    console.log('[WARN] WebSocket mất kết nối. Đang thử lại sau 2s...');
-    setTimeout(connectWebSocket, 2500);
+  ws.on('close', (code, reason) => {
+    console.log(`[WARN] WebSocket mất kết nối. Mã: ${code}, Lý do: ${reason || 'Không rõ'}. Đang thử lại sau 2.5s...`);
+    // Thử kết nối lại sau một khoảng thời gian
+    setTimeout(connectWebSocket, 2500); 
   });
 
   ws.on('error', (err) => {
-    console.error('[ERROR] WebSocket lỗi:', err.message);
+    console.error('[ERROR] WebSocket gặp lỗi:', err.message);
+    // Lỗi có thể dẫn đến đóng kết nối, `onclose` sẽ xử lý việc kết nối lại
   });
 }
 
-app.get('/taixiu', (req, res) => res.json(currentData));
-
-app.get('/', (req, res) => {
-  res.send(`<h2>Sunwin Tài Xỉu API</h2><p><a href="/taixiu">Xem kết quả JSON</a></p>`);
+// ================== CÁC ĐIỂM API HTTP =====================
+app.get('/taixiu', (req, res) => {
+  // Đặt header Cache-Control để tránh caching dữ liệu
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  res.json(currentData);
 });
 
+app.get('/', (req, res) => {
+  res.send(`<h2>Sunwin Tài Xỉu API - By @nhutquangdz🪼</h2><p>Dữ liệu được cập nhật tự động từ WebSocket.</p><p><a href="/taixiu">Xem kết quả JSON hiện tại</a></p>`);
+});
+
+// Khởi chạy Server và kết nối WebSocket
 app.listen(PORT, () => {
-  console.log(`[LOG] Server đang chạy tại http://localhost:${PORT}`);
-  connectWebSocket();
+  console.log(`[LOG] Server API đang chạy tại http://localhost:${PORT}`);
+  connectWebSocket(); // Bắt đầu kết nối WebSocket khi server khởi động
 });
