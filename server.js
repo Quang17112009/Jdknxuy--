@@ -43,6 +43,7 @@ let strategyWeights = {
     "Cầu Đối Xứng": 1.2,
     "Cầu Đảo Ngược": 1.1,
     "Cầu Ziczac Ngắn": 0.8,
+    "Cầu Lặp Chuỗi Khác": 1.1, // Giữ lại nhóm này nếu bạn đã có mẫu cho nó
     // Trọng số cho các chiến lược đặc biệt không thuộc nhóm mẫu
     "Xu hướng Tài mạnh (Ngắn)": 1.0,
     "Xu hướng Xỉu mạnh (Ngắn)": 1.0,
@@ -57,17 +58,17 @@ let strategyWeights = {
     "Reset Cầu/Bẻ Sâu": 1.9
 };
 
-// --- HÀM TẠO MẪU TỰ ĐỘNG ĐỂ ĐẠT 1000+ MẪU ---
+// --- HÀM TẠO MẪU TỰ ĐỘNG ---
 function generateCommonPatterns() {
     let patterns = [];
 
-    // 1. Cầu Bệt (Streaks): TTT... và XXX... (từ 3 đến 20 lần)
-    for (let i = 3; i <= 20; i++) {
+    // 1. Cầu Bệt (Streaks): TTT... và XXX... (từ 3 đến 15 lần)
+    for (let i = 3; i <= 15; i++) {
         patterns.push({
             name: `Cầu Bệt Tài (${i})`,
             pattern: "T".repeat(i),
             predict: "T",
-            conf: 0.05 + (i * 0.005), // Conf tăng theo độ dài, nhỏ hơn để không quá cao
+            conf: 0.05 + (i * 0.01), // Conf tăng theo độ dài
             minHistory: i,
             strategyGroup: "Cầu Bệt"
         });
@@ -75,14 +76,14 @@ function generateCommonPatterns() {
             name: `Cầu Bệt Xỉu (${i})`,
             pattern: "X".repeat(i),
             predict: "X",
-            conf: 0.05 + (i * 0.005),
+            conf: 0.05 + (i * 0.01),
             minHistory: i,
             strategyGroup: "Cầu Bệt"
         });
     }
 
-    // 2. Cầu 1-1 (Alternating): TXT... và XTX... (từ 3 đến 20 phiên)
-    for (let i = 3; i <= 20; i++) {
+    // 2. Cầu 1-1 (Alternating): TXT... và XTX... (từ 3 đến 15 phiên)
+    for (let i = 3; i <= 15; i++) {
         let patternTX = "";
         let patternXT = "";
         for (let j = 0; j < i; j++) {
@@ -92,23 +93,22 @@ function generateCommonPatterns() {
         patterns.push({
             name: `Cầu 1-1 (TX - ${i})`,
             pattern: patternTX,
-            predict: (i % 2 === 0 ? "T" : "X"),
-            conf: 0.05 + (i * 0.005),
+            predict: (i % 2 === 0 ? "T" : "X"), // Nếu chẵn kết thúc X -> dự đoán T, nếu lẻ kết thúc T -> dự đoán X
+            conf: 0.05 + (i * 0.01),
             minHistory: i,
             strategyGroup: "Cầu 1-1"
         });
         patterns.push({
             name: `Cầu 1-1 (XT - ${i})`,
             pattern: patternXT,
-            predict: (i % 2 === 0 ? "X" : "T"),
-            conf: 0.05 + (i * 0.005),
+            predict: (i % 2 === 0 ? "X" : "T"), // Nếu chẵn kết thúc T -> dự đoán X, nếu lẻ kết thúc X -> dự đoán T
+            conf: 0.05 + (i * 0.01),
             minHistory: i,
             strategyGroup: "Cầu 1-1"
         });
     }
 
     // 3. Cầu Lặp lại cơ bản (2-1, 2-2, 3-1, 3-2, 3-3, 4-1, 4-2, 4-3, 4-4)
-    // Tăng số lần lặp để có nhiều mẫu hơn
     const baseRepeatedPatterns = [
         { base: "TTX", group: "Cầu Lặp 2-1" }, { base: "XXT", group: "Cầu Lặp 2-1" },
         { base: "TTXX", group: "Cầu Lặp 2-2" }, { base: "XXTT", group: "Cầu Lặp 2-2" },
@@ -122,16 +122,18 @@ function generateCommonPatterns() {
     ];
 
     baseRepeatedPatterns.forEach(patternInfo => {
-        // Lặp từ 1 đến 5 lần để tạo thêm mẫu
-        for (let numRepeats = 1; numRepeats <= 5; numRepeats++) {
+        for (let numRepeats = 1; numRepeats <= 3; numRepeats++) { // Lặp 1, 2 hoặc 3 lần
             let currentPattern = patternInfo.base.repeat(numRepeats);
             let predictChar = patternInfo.base[0]; // Dự đoán theo ký tự đầu tiên của mẫu cơ sở
+            if (numRepeats > 0) { // Dự đoán tiếp theo của chuỗi lặp
+                predictChar = patternInfo.base[0]; // Dự đoán ký tự tiếp theo trong chuỗi lặp
+            }
 
             patterns.push({
                 name: `${patternInfo.group} (${patternInfo.base} x${numRepeats})`,
                 pattern: currentPattern,
                 predict: predictChar,
-                conf: 0.08 + (numRepeats * 0.01),
+                conf: 0.08 + (numRepeats * 0.02),
                 minHistory: currentPattern.length,
                 strategyGroup: patternInfo.group
             });
@@ -139,101 +141,85 @@ function generateCommonPatterns() {
     });
 
     // 4. Cầu Đối Xứng (Symmetric) và Đảo Ngược (Inverse)
-    // Thêm các biến thể đối xứng và đảo ngược dài hơn
     const symmetricAndInversePatterns = [
-        { base: "TX", predict: "T", group: "Cầu Đối Xứng" },
-        { base: "XT", predict: "X", group: "Cầu Đối Xứng" },
-        { base: "TXXT", predict: "T", group: "Cầu Đối Xứng" },
-        { base: "XTTX", predict: "X", group: "Cầu Đối Xứng" },
-        { base: "TTXT", predict: "X", group: "Cầu Đảo Ngược" },
-        { base: "XXTX", predict: "T", group: "Cầu Đảo Ngược" },
-        // Thêm các mẫu phức tạp hơn cho đối xứng
-        { base: "TXTXT", predict: "X", group: "Cầu Đối Xứng" },
-        { base: "XTXTX", predict: "T", group: "Cầu Đối Xứng" },
+        { base: "TX", predict: "T", group: "Cầu Đối Xứng" }, // TXT, TXTXT,...
+        { base: "XT", predict: "X", group: "Cầu Đối Xứng" }, // XTX, XTXTX,...
+        { base: "TXXT", predict: "T", group: "Cầu Đối Xứng" }, // TXXTTXXT
+        { base: "XTTX", predict: "X", group: "Cầu Đối Xứng" }, // XTTXXTTX
+        { base: "TTXT", predict: "X", group: "Cầu Đảo Ngược" }, // TTXT và sau đó XXTX (đảo ngược)
+        { base: "XXTX", predict: "T", group: "Cầu Đảo Ngược" }  // XXTX và sau đó TTXT
     ];
 
     symmetricAndInversePatterns.forEach(patternInfo => {
+        // Mẫu đối xứng đơn giản hoặc lặp lại
         for (let numRepeats = 1; numRepeats <= 3; numRepeats++) {
             let currentPattern = patternInfo.base.repeat(numRepeats);
             patterns.push({
                 name: `${patternInfo.group} (${patternInfo.base} x${numRepeats})`,
                 pattern: currentPattern,
-                predict: patternInfo.predict,
-                conf: 0.1 + (numRepeats * 0.015),
+                predict: patternInfo.predict, // Dự đoán dựa trên quy tắc của mẫu
+                conf: 0.1 + (numRepeats * 0.02),
                 minHistory: currentPattern.length,
                 strategyGroup: patternInfo.group
             });
         }
-        // Thêm một số mẫu đối xứng AABB... và đảo ngược AABBCC -> CCBBAA
-        if (patternInfo.base.length === 2) {
-            let patternABBA = patternInfo.base + patternInfo.base.split('').reverse().join(''); // ABBA
+        // Thêm một số mẫu đối xứng/đảo phức tạp hơn (ví dụ AABBCC...)
+        if (patternInfo.base.length === 2) { // Chỉ áp dụng cho mẫu cơ sở 2 ký tự
+            let pattern1 = patternInfo.base + patternInfo.base.split('').reverse().join(''); // ABBA
             patterns.push({
-                name: `${patternInfo.group} (${patternABBA})`,
-                pattern: patternABBA,
+                name: `${patternInfo.group} (${pattern1})`,
+                pattern: pattern1,
                 predict: patternInfo.base[0],
                 conf: 0.15,
-                minHistory: patternABBA.length,
+                minHistory: pattern1.length,
                 strategyGroup: patternInfo.group
             });
-            let patternABCCBA = patternInfo.base.repeat(2) + patternInfo.base.split('').reverse().join('').repeat(2); // ABAB BABA
-            if (patternABCCBA.length <= 10) { // Giới hạn độ dài để không quá lớn
-                patterns.push({
-                    name: `${patternInfo.group} (${patternABCCBA})`,
-                    pattern: patternABCCBA,
-                    predict: patternInfo.base[0],
-                    conf: 0.18,
-                    minHistory: patternABCCBA.length,
-                    strategyGroup: patternInfo.group
-                });
-            }
         }
     });
 
     // 5. Cầu Ziczac Ngắn (Short unpredictable bursts)
+    // Các mẫu 3-4 phiên ngắn, không quá rõ ràng nhưng có thể lặp lại
     const shortZiczacPatterns = [
         { pattern: "TTX", predict: "T" }, { pattern: "XXT", predict: "X" },
         { pattern: "TXT", predict: "X" }, { pattern: "XTX", predict: "T" },
         { pattern: "TXX", predict: "X" }, { pattern: "XTT", predict: "T" },
         { pattern: "TTXX", predict: "T" }, { pattern: "XXTT", predict: "X" },
-        { pattern: "TXTX", predict: "T" }, { pattern: "XTXT", predict: "X" },
-        { pattern: "XTTX", predict: "X" }, { pattern: "TXXT", predict: "T" } // Các mẫu 4 ngắn
+        { pattern: "TXTX", predict: "T" }, { pattern: "XTXT", predict: "X" }
     ];
     shortZiczacPatterns.forEach(p => {
         patterns.push({
             name: `Cầu Ziczac Ngắn (${p.pattern})`,
             pattern: p.pattern,
             predict: p.predict,
-            conf: 0.05,
+            conf: 0.05, // Độ tin cậy thấp hơn vì ít rõ ràng
             minHistory: p.pattern.length,
             strategyGroup: "Cầu Ziczac Ngắn"
         });
     });
-    
-    // Tăng cường số lượng bằng các mẫu lặp lại phức tạp hơn (ví dụ AABBAA)
-    // Mẫu lặp lại 2 lần của các mẫu cơ bản ngắn hơn
-    const complexRepeats = ["TTX", "XXT", "TXT", "TXX", "XTT"];
+
+    // Mẫu lặp chuỗi khác (tùy chọn, thêm vào để đa dạng)
+    const complexRepeats = ["TTX", "XXT", "TXT"]; // Ví dụ các base khác
     complexRepeats.forEach(base => {
-        for (let i = 2; i <= 4; i++) { // Lặp từ 2 đến 4 lần
+        for (let i = 2; i <= 3; i++) { // Lặp từ 2 đến 3 lần
             const currentPattern = base.repeat(i);
-            if (currentPattern.length <= 15) { // Giới hạn độ dài
+            if (currentPattern.length <= 10) { // Giới hạn độ dài
                 patterns.push({
                     name: `Cầu Lặp Chuỗi Khác (${base} x${i})`,
                     pattern: currentPattern,
                     predict: base[0],
                     conf: 0.07 + (i * 0.01),
                     minHistory: currentPattern.length,
-                    strategyGroup: "Cầu Lặp Chuỗi Khác" // Nhóm mới
+                    strategyGroup: "Cầu Lặp Chuỗi Khác"
                 });
             }
         }
     });
 
-
     return patterns;
 }
 
 const allPatternStrategies = generateCommonPatterns();
-console.log(`[Khởi tạo] Tổng số mẫu cầu đã tạo: ${allPatternStrategies.length} (Mục tiêu 1000 mẫu được tạo linh hoạt)`);
+console.log(`[Khởi tạo] Tổng số mẫu cầu đã tạo: ${allPatternStrategies.length}`); // Log số lượng mẫu
 
 // Kiểm tra để đảm bảo tất cả các nhóm chiến lược trong allPatternStrategies
 // đều có trọng số ban đầu trong strategyWeights
