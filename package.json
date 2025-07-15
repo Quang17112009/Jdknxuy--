@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node server.js"
   },
-  "author": "@ghetvietcode - Rinkivana",
+  "author": "ApiSunWin-@nhutquangdz🪼",
   "license": "ISC",
   "dependencies": {
     "cors": "^2.8.5",
