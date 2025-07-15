@@ -24,7 +24,7 @@ let fullHistory = []; // Lưu đầy đủ lịch sử để phục vụ predict
 
 // === Danh sách tin nhắn gửi lên server WebSocket ===
 const messagesToSend = [
-  [1, "MiniGame", "SC_apisunwin123", "binhlamtool90", {
+  [1, "MiniGame", "SC_apisunwin123", {
     "info": "{\"ipAddress\":\"2a09:bac1:7aa0:10::2e5:4d\",\"userId\":\"d93d3d84-f069-4b3f-8dac-b4716a812143\",\"username\":\"SC_apisunwin123\",\"timestamp\":1752045925640,\"refreshToken\":\"dd38d05401bb48b4ac3c2f6dc37f36d9.f22dccad89bb4e039814b7de64b05d63\"}",
     "signature": "6FAD7CF6196AFBF0380BC69B59B653A05153D3D0E4E9A07BA43890CC3FB665B92C2E09E5B34B31FD8D74BDCB3B03A29255C5A5C7DFB426A8D391836CF9DCB7E5CEA743FE07521075DED70EFEC7F78C8993BDBF8626D58D3E68D36832CA4823F516B7E41DB353EA79290367D34DF98381089E69EA7C67FB3588B39C9C4D7174B2"
   }],
@@ -220,7 +220,7 @@ function connectWebSocket() {
   });
 
   ws.on('open', () => {
-    console.log('[✅] WebSocket kết nối');
+    console.log('✅ WebSocket kết nối');
     messagesToSend.forEach((msg, i) => {
       setTimeout(() => {
         if (ws.readyState === WebSocket.OPEN) {
@@ -237,7 +237,7 @@ function connectWebSocket() {
   });
 
   ws.on('pong', () => {
-    console.log('[📶] Ping OK');
+    console.log('📶 Ping OK');
   });
 
   ws.on('message', (message) => {
@@ -293,7 +293,7 @@ function connectWebSocket() {
   });
 
   ws.on('close', () => {
-    console.log('[🔌] WebSocket ngắt. Đang kết nối lại...');
+    console.log('🔌 WebSocket ngắt. Đang kết nối lại...');
     clearInterval(pingInterval);
     if (!isManuallyClosed) {
       reconnectTimeout = setTimeout(connectWebSocket, 2500);
@@ -301,7 +301,7 @@ function connectWebSocket() {
   });
 
   ws.on('error', (err) => {
-    console.error('[❌] WebSocket lỗi:', err.message);
+    console.error('❌ WebSocket lỗi:', err.message);
   });
 }
 
@@ -311,11 +311,11 @@ app.get('/taixiu', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-  res.send(`<h2>🎯 Kết quả Sunwin Tài Xỉu</h2><p><a href="/taixiu">Xem kết quả JSON</a></p>`);
+  res.send(`<h2>🎯 by Nhutquangdz </h2><p><a href="/taixiu">Xem kết quả JSON</a></p>`);
 });
 
 // === Khởi động server ===
 app.listen(PORT, () => {
-  console.log(`[🌐] Server chạy tại http://localhost:${PORT}`);
+  console.log(`🌐 Server chạy tại http://localhost:${PORT}`);
   connectWebSocket();
 });
