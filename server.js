@@ -216,7 +216,7 @@ function connectWebSocket() {
             do_tin_cay: `${(predictionResult.confidence * 100).toFixed(2)}%`,
             cau: predictionResult.predictionDetails.join('; '), // Gắn chi tiết phân tích vào đây
             ngay: new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }),
-            Id: "@ghetvietcode - Rinkivana"
+            Id: "ApiSunWin-@nhutquangdz🪼"
           };
           
           console.log(`[LOG] Phiên ${id_phien_chua_co_kq} → ${d1}-${d2}-${d3} = ${total} (${(result === "T" ? "Tài" : "Xỉu")}) | Dự đoán: ${currentData.du_doan} (${currentData.do_tin_cay}) - Chi tiết: ${currentData.cau}`);
