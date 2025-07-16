@@ -17,7 +17,8 @@ let currentData = {
   "Id": "ApiSunWin-by @nhutquangdz🪼"
 };
 
-let id_phien_chua_co_kq = null;
+let lastSessionResult = null; // Lưu kết quả của phiên vừa xong để cập nhật trọng số
+let id_phien_sap_toi = null; // ID của phiên mà chúng ta đang dự đoán cho nó
 
 let patternHistory = []; // Lưu dãy T/X gần nhất (lên đến 200 phiên)
 let diceHistory = [];    // Lưu lịch sử các mặt xúc xắc chi tiết
@@ -43,6 +44,7 @@ let strategyWeights = {
     "Cầu Đối Xứng": 1.2,
     "Cầu Đảo Ngược": 1.1,
     "Cầu Ziczac Ngắn": 0.8,
+    "Cầu Lặp Chuỗi Khác": 1.0, // Thêm nhóm mới
     // Trọng số cho các chiến lược đặc biệt không thuộc nhóm mẫu
     "Xu hướng Tài mạnh (Ngắn)": 1.0,
     "Xu hướng Xỉu mạnh (Ngắn)": 1.0,
@@ -542,53 +544,76 @@ function connectWebSocket() {
       if (Array.isArray(data) && typeof data[1] === 'object') {
         const cmd = data[1].cmd;
 
-        // Khi có phiên mới sắp bắt đầu (sid của phiên tiếp theo), cập nhật trọng số cho phiên vừa kết thúc
-        if (cmd === 1008 && data[1].sid) {
-          id_phien_chua_co_kq = data[1].sid;
-          if (lastRawPredictions.length > 0 && patternHistory.length > 0) {
-              const actualResultOfPreviousSession = patternHistory[patternHistory.length - 1];
-              lastRawPredictions.forEach(pred => {
-                  // Truyền đúng tên chiến lược và kết quả dự đoán
-                  updateStrategyWeight(pred.strategy, pred.predict, actualResultOfPreviousSession);
-              });
-              lastRawPredictions = []; // Xóa dự đoán thô sau khi đã cập nhật
-          }
-        }
-
-        // Khi có kết quả phiên (gBB)
+        // Xử lý khi có kết quả phiên (gBB)
         if (cmd === 1003 && data[1].gBB) {
           const { d1, d2, d3 } = data[1];
           const total = d1 + d2 + d3;
           const actualResult = total > 10 ? "T" : "X";
+          const currentSessionId = data[1].sid - 1; // Sid trong gBB là của phiên tiếp theo, nên -1 để lấy sid phiên vừa kết thúc
+
+          // 1. Cập nhật lịch sử và trọng số cho phiên vừa kết thúc
+          if (lastSessionResult) { // Nếu có kết quả của phiên trước đó đã được lưu
+            if (lastRawPredictions.length > 0) {
+                lastRawPredictions.forEach(pred => {
+                    updateStrategyWeight(pred.strategy, pred.predict, actualResult);
+                });
+                lastRawPredictions = []; // Xóa dự đoán thô sau khi đã cập nhật
+            }
+          }
 
           patternHistory.push(actualResult);
-          if (patternHistory.length > 200) { // Giới hạn lịch sử để hiệu suất tốt
+          if (patternHistory.length > 200) {
             patternHistory.shift();
           }
           diceHistory.push({ d1, d2, d3, total });
-          if (diceHistory.length > 200) { // Giới hạn lịch sử xúc xắc
+          if (diceHistory.length > 200) {
             diceHistory.shift();
           }
 
-          const predictionResult = analyzeAndPredict(patternHistory, diceHistory);
-          // Lưu lại các dự đoán thô của phiên này để cập nhật trọng số ở phiên tiếp theo
-          lastRawPredictions = predictionResult.rawPredictions;
+          // Lưu kết quả phiên này để sử dụng cho việc cập nhật trọng số ở lần sau
+          lastSessionResult = actualResult;
 
-          currentData = {
-            phien_truoc: id_phien_chua_co_kq,
-            ket_qua: (actualResult === "T" ? "Tài" : "Xỉu"),
-            Dice: [d1, d2, d3],
-            phien_hien_tai: id_phien_chua_co_kq + 1,
-            du_doan: (predictionResult.finalPrediction === "T" ? "Tài" : (predictionResult.finalPrediction === "X" ? "Xỉu" : predictionResult.finalPrediction)),
-            do_tin_cay: `${(predictionResult.confidence * 100).toFixed(2)}%`,
-            cau: predictionResult.predictionDetails.join('; '),
-            ngay: new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }),
-            Id: "ApiSunWin-@nhutquangdz🪼"
-          };
+          // Cập nhật dữ liệu hiện tại (kết quả của phiên vừa xong)
+          currentData.phien_truoc = currentSessionId;
+          currentData.ket_qua = (actualResult === "T" ? "Tài" : "Xỉu");
+          currentData.Dice = [d1, d2, d3];
+          currentData.ngay = new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" });
 
           console.log(`[LOG] Phiên ${currentData.phien_truoc} → ${d1}-${d2}-${d3} = ${total} (${currentData.ket_qua})`);
-          console.log(`[LOG] Dự đoán P.${currentData.phien_hien_tai}: ${currentData.du_doan} (${currentData.do_tin_cay})`);
-          console.log(`[LOG] Chi tiết phân tích: ${currentData.cau}`);
+          
+          // Sau khi có kết quả và cập nhật lịch sử, tiến hành dự đoán cho phiên sắp tới
+          if (id_phien_sap_toi) { // Chỉ dự đoán nếu đã biết ID phiên sắp tới
+            const predictionResult = analyzeAndPredict(patternHistory, diceHistory);
+            lastRawPredictions = predictionResult.rawPredictions; // Lưu dự đoán thô cho phiên này
+
+            currentData.phien_hien_tai = id_phien_sap_toi;
+            currentData.du_doan = (predictionResult.finalPrediction === "T" ? "Tài" : (predictionResult.finalPrediction === "X" ? "Xỉu" : predictionResult.finalPrediction));
+            currentData.do_tin_cay = `${(predictionResult.confidence * 100).toFixed(2)}%`;
+            currentData.cau = predictionResult.predictionDetails.join('; ');
+
+            console.log(`[LOG] Dự đoán P.${currentData.phien_hien_tai}: ${currentData.du_doan} (${currentData.do_tin_cay})`);
+            console.log(`[LOG] Chi tiết phân tích: ${currentData.cau}`);
+          }
+        }
+
+        // Khi có thông báo về phiên mới (cmd 1008), cập nhật ID phiên sắp tới
+        if (cmd === 1008 && data[1].sid) {
+          id_phien_sap_toi = data[1].sid;
+          currentData.phien_hien_tai = id_phien_sap_toi; // Cập nhật ngay ID phiên hiện tại cho dữ liệu API
+
+          // Ngay lập tức dự đoán cho phiên mới này nếu có đủ lịch sử
+          if (patternHistory.length > 0) {
+            const predictionResult = analyzeAndPredict(patternHistory, diceHistory);
+            lastRawPredictions = predictionResult.rawPredictions; // Lưu dự đoán thô cho phiên này
+            
+            currentData.du_doan = (predictionResult.finalPrediction === "T" ? "Tài" : (predictionResult.finalPrediction === "X" ? "Xỉu" : predictionResult.finalPrediction));
+            currentData.do_tin_cay = `${(predictionResult.confidence * 100).toFixed(2)}%`;
+            currentData.cau = predictionResult.predictionDetails.join('; ');
+
+            console.log(`[LOG] Đã nhận thông báo P.${id_phien_sap_toi}. Dự đoán nhanh: ${currentData.du_doan} (${currentData.do_tin_cay})`);
+          } else {
+             console.log(`[LOG] Đã nhận thông báo P.${id_phien_sap_toi}. Chưa đủ lịch sử để dự đoán.`);
+          }
         }
       }
     } catch (err) {
@@ -612,7 +637,6 @@ app.get('/', (req, res) => {
   res.send(`<h2>Sunwin Tài Xỉu API</h2><p><a href="/taixiu">Xem kết quả JSON</a></p>`);
 });
 
-app.listen(PORT, () => {
-  console.log(`[LOG] Server đang chạy tại http://localhost:${PORT}`);
-  connectWebSocket();
-});
+// Bắt đầu kết nối
+connectWebSocket();
+
