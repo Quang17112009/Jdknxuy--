@@ -5,26 +5,24 @@ const app = express();
 app.use(cors());
 const PORT = process.env.PORT || 5000;
 
-// Khởi tạo dữ liệu ban đầu
 let currentData = {
-  "phien_truoc": null, // Sẽ được cập nhật chính xác là ID của phiên vừa kết thúc
+  "phien_truoc": null, // Sẽ được cập nhật từ currentSessionId
   "ket_qua": "",
   "Dice": [],
   "phien_hien_tai": null, // Sẽ là phien_truoc + 1
   "du_doan": "",
   "do_tin_cay": "",
-  "nen_danh": "Đang chờ dữ liệu...", // Thêm trường mới cho lời khuyên
   "cau": "",
   "ngay": "",
   "Id": "ApiSunWin-by @nhutquangdz🪼"
 };
 
-let currentSessionId = null; // Biến này sẽ lưu ID của phiên hiện tại đang chạy/chờ kết quả (ID phiên được dự đoán)
-let lastCompletedSessionId = null; // Lưu ID của phiên VỪA KẾT THÚC (có kết quả)
-let lastRawPredictions = []; // Lưu trữ các dự đoán thô của phiên trước để cập nhật trọng số chính xác hơn
+let currentSessionId = null; // Biến này sẽ lưu ID của phiên hiện tại đang chạy/chờ kết quả, được lấy từ cmd: 1008
+let lastKnownResultSessionId = null; // Lưu ID của phiên cuối cùng đã có kết quả (dùng để cập nhật trọng số)
 
 let patternHistory = []; // Lưu dãy T/X gần nhất (lên đến 200 phiên)
 let diceHistory = [];    // Lưu lịch sử các mặt xúc xắc chi tiết
+let lastRawPredictions = []; // Lưu trữ các dự đoán thô của phiên trước để cập nhật trọng số chính xác hơn
 
 let predictionPerformance = {}; // { strategyName: { correct: 0, total: 0 } }
 
@@ -548,37 +546,28 @@ function connectWebSocket() {
         // Khi có phiên mới sắp bắt đầu (sid của phiên tiếp theo) - cmd: 1008
         // Đây là nơi chúng ta lấy ID phiên chính xác
         if (cmd === 1008 && data[1].sid) {
-          // data[1].sid là ID của phiên SẮP TỚI mà chúng ta sẽ dự đoán kết quả
-          // Cập nhật trọng số của các dự đoán THÔ của phiên ĐÃ KẾT THÚC
-          if (lastRawPredictions.length > 0 && patternHistory.length > 0 && lastCompletedSessionId !== null) {
+          // data[1].sid là ID của phiên SẮP TỚI
+          // Nếu có ID phiên trước đã hoàn tất (tức là đã có kết quả), thì cập nhật trọng số
+          if (lastRawPredictions.length > 0 && patternHistory.length > 0 && lastKnownResultSessionId !== null) {
               const actualResultOfPreviousSession = patternHistory[patternHistory.length - 1];
-              console.log(`[LOG HỌC HỎI] Cập nhật trọng số cho phiên ${lastCompletedSessionId} với kết quả: ${actualResultOfPreviousSession}`);
+              console.log(`[LOG HỌC HỎI] Cập nhật trọng số cho phiên ${lastKnownResultSessionId} với kết quả: ${actualResultOfPreviousSession}`);
               lastRawPredictions.forEach(pred => {
                   updateStrategyWeight(pred.strategy, pred.predict, actualResultOfPreviousSession);
               });
               lastRawPredictions = []; // Xóa dự đoán thô sau khi đã cập nhật
           }
-          
-          currentSessionId = data[1].sid; // Lưu ID của phiên hiện tại đang chờ kết quả
-
-          // Reset dữ liệu dự đoán cho phiên mới này để chuẩn bị cho dự đoán mới
+          currentSessionId = data[1].sid; // LƯU ID của phiên hiện tại đang chờ kết quả vào biến này
+          // Cập nhật phien_hien_tai ngay khi nhận được cmd 1008 để nó có thể được hiển thị sớm nhất
+          // Đây là phiên mà chúng ta sẽ dự đoán kết quả
           currentData.phien_hien_tai = currentSessionId;
-          currentData.du_doan = "Đang phân tích...";
-          currentData.do_tin_cay = "Đang phân tích...";
-          currentData.nen_danh = "Đang chờ kết quả phiên trước...";
-          currentData.cau = "";
           console.log(`[LOG] Cập nhật phiên hiện tại: ${currentData.phien_hien_tai}`);
         }
 
         // Khi có kết quả phiên (gBB) - cmd: 1003
-        if (cmd === 1003 && data[1].d1 && data[1].d2 && data[1].d3) {
-          const { d1, d2, d3 } = data[1];
+        if (cmd === 1003 && data[1].gBB) {
+          const { d1, d2, d3 } = data[1]; // Bỏ 'sid' khỏi đây vì nó không có trong gBB payload
           const total = d1 + d2 + d3;
           const actualResult = total > 10 ? "T" : "X";
-          
-          // Lấy ID phiên vừa kết thúc (nếu có, từ phiên được dự đoán trước đó)
-          const sessionFinishedId = currentSessionId ? (currentSessionId - 1) : null;
-          lastCompletedSessionId = sessionFinishedId; // Cập nhật ID phiên vừa hoàn tất
 
           // Cập nhật lịch sử
           patternHistory.push(actualResult);
@@ -594,35 +583,24 @@ function connectWebSocket() {
           const predictionResult = analyzeAndPredict(patternHistory, diceHistory);
           lastRawPredictions = predictionResult.rawPredictions; // Lưu dự đoán thô của phiên MỚI này
 
-          // Xác định nên đánh hay không
-          const confidenceThreshold = 0.65; // Ngưỡng độ tin cậy để khuyến nghị đánh
-          let nenDanhStatus = "";
-          if (predictionResult.finalPrediction === "?") {
-              nenDanhStatus = "Chưa có đủ dữ liệu để dự đoán.";
-          } else if (predictionResult.confidence < confidenceThreshold) {
-              nenDanhStatus = "Nên Bỏ Qua Phiên Này";
-          } else {
-              nenDanhStatus = `${(predictionResult.confidence * 100).toFixed(2)}% nên đánh`;
-          }
-
           // Cập nhật currentData
           currentData = {
-            phien_truoc: sessionFinishedId, // ID của phiên VỪA KẾT THÚC
+            phien_truoc: currentSessionId, // ID của phiên VỪA KẾT THÚC (chính là currentSessionId trước đó)
             ket_qua: (actualResult === "T" ? "Tài" : "Xỉu"),
             Dice: [d1, d2, d3],
-            // currentSessionId đã là ID của phiên tiếp theo từ cmd 1008
-            phien_hien_tai: currentSessionId, 
+            // phien_hien_tai sẽ được cập nhật bởi cmd: 1008 tiếp theo
+            phien_hien_tai: currentSessionId !== null ? currentSessionId + 1 : null,
             du_doan: (predictionResult.finalPrediction === "T" ? "Tài" : (predictionResult.finalPrediction === "X" ? "Xỉu" : predictionResult.finalPrediction)),
             do_tin_cay: `${(predictionResult.confidence * 100).toFixed(2)}%`,
-            nen_danh: nenDanhStatus, // Gán trạng thái nên đánh
             cau: predictionResult.predictionDetails.join('; '),
             ngay: new Date().toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh" }),
             Id: "ApiSunWin-@nhutquangdz🪼"
           };
           
+          lastKnownResultSessionId = currentSessionId; // Lưu lại ID của phiên vừa có kết quả từ currentSessionId
+
           console.log(`[LOG] Phiên ${currentData.phien_truoc} → ${d1}-${d2}-${d3} = ${total} (${currentData.ket_qua})`);
           console.log(`[LOG] Dự đoán P.${currentData.phien_hien_tai}: ${currentData.du_doan} (${currentData.do_tin_cay})`);
-          console.log(`[LOG] Lời khuyên: ${currentData.nen_danh}`);
           console.log(`[LOG] Chi tiết phân tích: ${currentData.cau}`);
         }
       }
@@ -633,22 +611,8 @@ function connectWebSocket() {
 
   ws.on('close', () => {
     console.log('[WARN] WebSocket mất kết nối. Đang thử lại sau 2.5s...');
-    // Reset các biến liên quan đến phiên khi mất kết nối để tránh dùng SID cũ
+    // Reset currentSessionId khi mất kết nối để tránh dùng SID cũ
     currentSessionId = null; 
-    lastCompletedSessionId = null;
-    lastRawPredictions = [];
-    currentData = { // Reset currentData về trạng thái chờ
-        "phien_truoc": null,
-        "ket_qua": "",
-        "Dice": [],
-        "phien_hien_tai": null,
-        "du_doan": "",
-        "do_tin_cay": "",
-        "nen_danh": "Đang chờ kết nối lại...",
-        "cau": "",
-        "ngay": "",
-        "Id": "ApiSunWin-by @nhutquangdz🪼"
-    };
     setTimeout(connectWebSocket, 2500);
   });
 
