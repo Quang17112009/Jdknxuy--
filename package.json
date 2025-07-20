@@ -1,16 +1,11 @@
 {
-  "name": "sunwin-api-v2.1",
-  "version": "2.1.0",
-  "description": "API Sunwin Tài Xỉu với thuật toán tổng hợp",
+  "name": "789-taixiu",
+  "version": "1.0.0",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "author": "ApiSunWin-@nhutquangdz🪼",
-  "license": "ISC",
   "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "ws": "^8.17.1"
+    "ws": "^8.15.0"
   }
 }
